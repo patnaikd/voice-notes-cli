@@ -1,0 +1,2 @@
+"""Voice Notes CLI."""
+
