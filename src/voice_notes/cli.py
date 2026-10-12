@@ -14,7 +14,7 @@ from pathlib import Path
 from .native import build_helper
 from .meter import AudioMeter
 from .refine import refine
-from .session import atomic_write, read_segments, render_transcript, timestamp
+from .session import atomic_write, read_segments, render_transcript, timestamp, validate_segment
 
 
 def format_notes(journal: Path, title: str, model: str) -> Path:
@@ -23,7 +23,7 @@ def format_notes(journal: Path, title: str, model: str) -> Path:
     atomic_write(journal.parent / "transcript.md", transcript)
     if not any(s["text"].strip() for s in segments):
         raise RuntimeError("No finalized speech was captured; raw events are preserved")
-    print(f"Formatting with {model} (sending transcript text to Claude)…", file=sys.stderr)
+    print(f"Formatting with {model}…", file=sys.stderr)
     notes = asyncio.run(refine(transcript, model, journal.parent))
     path = journal.parent / "notes.md"
     atomic_write(path, notes)
@@ -77,6 +77,8 @@ def record(args):
         recognizer = None
         process = None
         timer = None
+        startup_timer = None
+        ready = threading.Event()
         old_signals = {}
         stop_requested = False
 
@@ -111,10 +113,34 @@ def record(args):
                 "--app", args.app, "--locale", args.locale,
                 "--mic", args.mic or "",
             ], stdout=subprocess.PIPE, text=True, start_new_session=True)
+            def startup_expired():
+                if not ready.is_set() and process.poll() is None:
+                    message = (f"Capture did not become ready within {args.startup_timeout:g} seconds. "
+                               "Check macOS permissions and speech asset downloads; "
+                               "increase --startup-timeout for first-time setup.")
+                    failures.append(message)
+                    meter.print(message)
+                    stop()
+
+            startup_timer = threading.Timer(args.startup_timeout, startup_expired)
+            startup_timer.daemon = True
+            startup_timer.start()
             duration_timer = None
             try:
                 for line in process.stdout:
-                    event = json.loads(line)
+                    try:
+                        event = json.loads(line)
+                        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                            raise ValueError("expected a JSON event object")
+                        if event["type"] == "segment":
+                            validate_segment(event)
+                    except ValueError as error:
+                        failures.append(f"Invalid capture event: {error}. Saved speech was preserved.")
+                        stop()
+                        break
+                    if event["type"] == "ready":
+                        ready.set()
+                        startup_timer.cancel()
                     if event["type"] == "ready" and args.duration:
                         duration_timer = threading.Timer(args.duration, stop)
                         duration_timer.daemon = True
@@ -137,6 +163,8 @@ def record(args):
                     process.wait()
             if timer:
                 timer.cancel()
+            if startup_timer:
+                startup_timer.cancel()
             for number, handler in old_signals.items():
                 signal.signal(number, handler)
             try:
@@ -214,16 +242,19 @@ def main(argv=None):
     rec.add_argument("--partials", action="store_true", help="Also print in-progress text")
     rec.add_argument("--no-meter", action="store_true", help="Hide live microphone and speaker audio meters")
     rec.add_argument("--duration", type=positive, help="Automatically stop after this many recording seconds")
+    rec.add_argument("--startup-timeout", type=positive, default=120, help="Seconds to wait for capture readiness (default: 120)")
     rec.add_argument("--no-refine", action="store_true", help="Keep transcription entirely local")
     rec.add_argument("--output", type=Path, default=Path("meetings"))
     rec.add_argument("--model-cache", type=Path, default=Path(".cache/moonshine"))
-    rec.add_argument("--model", default="haiku", help="Claude model alias or ID (default: haiku)")
+    rec.add_argument("--model", default="claude-haiku-5-5", help="Claude model alias or ID (default: claude-haiku-5-5)")
     fmt = sub.add_parser("refine", help="Format or recover an existing meeting journal")
     fmt.add_argument("journal", type=Path)
     fmt.add_argument("--title")
-    fmt.add_argument("--model", default="haiku")
+    fmt.add_argument("--model", default="claude-haiku-5-5")
     args = parser.parse_args(argv)
     try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
         if args.command == "record":
             record(args)
         elif args.command == "doctor":
@@ -236,7 +267,10 @@ def main(argv=None):
             metadata = args.journal.parent / "meeting.json"
             title = args.title or (json.loads(metadata.read_text()).get("title", "Meeting") if metadata.exists() else "Meeting")
             print(format_notes(args.journal, title, args.model))
-    except (Exception, KeyboardInterrupt) as error:
+    except KeyboardInterrupt:
+        print("voice-notes: Interrupted. Saved transcripts and formatting checkpoints are preserved.", file=sys.stderr)
+        return 130
+    except Exception as error:
         print(f"voice-notes: {error or 'interrupted'}", file=sys.stderr)
         return 1
     return 0

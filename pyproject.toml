@@ -5,13 +5,21 @@ build-backend = "hatchling.build"
 [project]
 name = "voice-notes-cli"
 version = "0.1.0"
+readme = "README.md"
 description = "Local macOS meeting transcription with Claude Haiku meeting notes"
 requires-python = ">=3.12"
-dependencies = ["claude-agent-sdk==0.2.165"]
+dependencies = [
+    "claude-agent-sdk==0.2.165",
+    "python-dotenv>=1.2.4",
+]
 
 [project.optional-dependencies]
 moonshine = ["moonshine-voice==0.1.5"]
 dev = ["pytest>=8"]
+
+[project.urls]
+Repository = "https://github.com/patnaikd/voice-notes-cli"
+Documentation = "https://github.com/patnaikd/voice-notes-cli#readme"
 
 [project.scripts]
 voice-notes = "_voice_notes_launcher:main"

@@ -74,3 +74,36 @@ def test_devices_distinguishes_inputs_outputs_and_defaults(tmp_path, monkeypatch
     assert "Headset" not in inputs
     assert "Headset [system default]" in outputs
     assert "USB Microphone" not in outputs
+
+
+def test_malformed_capture_event_preserves_previous_speech(tmp_path, monkeypatch, capsys):
+    helper = tmp_path / "fake-capture"
+    event = dict(type="segment", source="mic", id="1", start=0, end=1, text="Keep this.")
+    helper.write_text("#!/bin/sh\ncat <<'EVENTS'\n" + json.dumps(event) + "\n[]\nEVENTS\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr(cli, "build_helper", lambda _: helper)
+    assert cli.main(["record", "--output", str(tmp_path / "meetings"), "--no-refine"]) == 1
+    transcript = next((tmp_path / "meetings").glob("*/transcript.md"))
+    assert "Keep this." in transcript.read_text()
+    assert "Invalid capture event" in capsys.readouterr().err
+
+
+def test_startup_timeout_finalizes_and_preserves_speech(tmp_path, monkeypatch, capsys):
+    helper = tmp_path / "fake-capture"
+    helper.write_text('''#!/bin/sh
+exec python3 - <<'SCRIPT'
+import json, signal, time, sys
+def finish(*args):
+    print(json.dumps(dict(type="segment", source="mic", id="1", start=0, end=1, text="Final speech.")), flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGTERM, finish)
+print(json.dumps(dict(type="status", message="Starting")), flush=True)
+while True: time.sleep(0.01)
+SCRIPT
+''')
+    helper.chmod(0o755)
+    monkeypatch.setattr(cli, "build_helper", lambda _: helper)
+    assert cli.main(["record", "--output", str(tmp_path / "meetings"),
+                     "--startup-timeout", "0.5", "--no-refine"]) == 1
+    assert "Final speech." in next((tmp_path / "meetings").glob("*/transcript.md")).read_text()
+    assert "did not become ready" in capsys.readouterr().err

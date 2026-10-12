@@ -45,3 +45,23 @@ def test_invalid_segment_rejected(tmp_path, extra):
     journal.write_text(json.dumps(event))
     with pytest.raises(ValueError):
         read_segments(journal)
+
+
+def test_failed_atomic_replace_keeps_existing_file(tmp_path, monkeypatch):
+    from voice_notes import session
+    path = tmp_path / "notes.md"
+    path.write_text("Previous notes")
+    def fail(*args):
+        raise OSError("Disk write failed")
+    monkeypatch.setattr(session.os, "replace", fail)
+    with pytest.raises(OSError, match="Disk write"):
+        session.atomic_write(path, "New notes")
+    assert path.read_text() == "Previous notes"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_non_object_journal_event_is_rejected(tmp_path):
+    journal = tmp_path / "events.jsonl"
+    journal.write_text('[]\n')
+    with pytest.raises(ValueError, match="JSON objects"):
+        read_segments(journal)

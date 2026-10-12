@@ -8,3 +8,7 @@ __pycache__/
 .env
 meetings/
 
+.env.*
+!.env.example
+.DS_Store
+dist/

@@ -2,6 +2,7 @@
 import os
 import platform
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -16,16 +17,25 @@ def build_helper(build_dir: Path) -> Path:
     if binary.exists() and binary.stat().st_mtime >= max(source.stat().st_mtime, plist.stat().st_mtime):
         return binary.resolve()
     build_dir.mkdir(parents=True, exist_ok=True)
-    temporary = binary.with_suffix(".tmp")
-    command = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
-               "-module-cache-path", str(build_dir / "module-cache"), str(source),
-               "-o", str(temporary), "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT",
-               "-Xlinker", "__info_plist", "-Xlinker", str(plist)]
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode:
-        raise RuntimeError("Swift helper build failed. Install Xcode/Command Line Tools with a macOS 26 SDK.\n" + result.stderr)
-    # Stable ad-hoc signing identity helps macOS associate permissions with the helper.
-    subprocess.run(["codesign", "--force", "--sign", "-", "--identifier",
-                    "local.voice-notes.capture", str(temporary)], check=True, capture_output=True)
-    os.replace(temporary, binary)
+    # Independent temporary paths allow simultaneous CLI invocations to build
+    # without clobbering one another or replacing a working helper on failure.
+    with tempfile.TemporaryDirectory(prefix=".compile-", dir=build_dir) as directory:
+        temporary = Path(directory) / binary.name
+        command = ["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-O",
+                   "-module-cache-path", str(build_dir / "module-cache"), str(source),
+                   "-o", str(temporary), "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT",
+                   "-Xlinker", "__info_plist", "-Xlinker", str(plist)]
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+            if result.returncode:
+                raise RuntimeError("Swift helper build failed. Install Xcode/Command Line Tools with a macOS 26 SDK.\n" + result.stderr)
+            subprocess.run(["codesign", "--force", "--sign", "-", "--identifier",
+                            "local.voice-notes.capture", str(temporary)],
+                           check=True, capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError("Native helper build/signing timed out; the previous helper was preserved. "
+                               "Check your Xcode installation and retry voice-notes build.") from error
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError("Could not sign the capture helper; the previous helper was preserved.") from error
+        os.replace(temporary, binary)
     return binary.resolve()

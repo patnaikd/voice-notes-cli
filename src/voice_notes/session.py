@@ -1,6 +1,8 @@
 """Durable event journal; later diarization revisions replace earlier labels."""
 import json
 import math
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -34,6 +36,8 @@ def read_segments(path: Path) -> list[dict]:
                 if stream.read().strip():
                     raise ValueError("Corrupt transcript journal before its final line")
                 break
+            if not isinstance(event, dict):
+                raise ValueError("Transcript journal events must be JSON objects")
             if event.get("type") == "segment":
                 validate_segment(event)
                 latest[(event["source"], event["id"])] = event
@@ -56,7 +60,16 @@ def render_transcript(segments: list[dict], title: str) -> str:
 
 
 def atomic_write(path: Path, content: str) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(content)
-    temporary.replace(path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 

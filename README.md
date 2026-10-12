@@ -1,107 +1,128 @@
 # Voice Notes CLI
 
-Record microphone and system speaker audio, transcribe locally, and turn the transcript into Markdown meeting notes with **Claude Agent SDK + Haiku**.
+Record microphone and system audio, transcribe locally, and turn the transcript into Markdown notes with **Claude Agent SDK + `claude-haiku-5-5`**. Works with any meeting app or browser; no Zoom integration or audio routing driver is required.
 
-Requires an Apple Silicon Mac running **macOS 26+**, Python 3.12+, and Xcode or Command Line Tools with the macOS 26 SDK. The native helper uses ScreenCaptureKit; no BlackHole or other audio routing driver is needed.
+- Separate microphone and system tracks, with timestamps and live audio meters.
+- Apple SpeechAnalyzer by default; optional Moonshine recognition and anonymous speaker labels.
+- Local transcript journal that survives capture and formatting failures.
+- Optional Claude summaries, discussion, decisions, action items, and open questions.
 
-## Install
+## Requirements
+
+An **Apple Silicon Mac running macOS 26 or later**, Python **3.12+**, and Xcode or Command Line Tools with the **macOS 26 SDK**. Use `xcode-select --install` if Command Line Tools are missing. [uv](https://docs.astral.sh/uv/getting-started/installation/) manages Python dependencies.
+
+First-time speech recognition can download language assets. Moonshine downloads its own models. Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
+
+## Quick start
 
 ```sh
-uv sync --extra moonshine --extra dev
+git clone https://github.com/patnaikd/voice-notes-cli.git
+cd voice-notes-cli
+uv sync
 uv run voice-notes build
 uv run voice-notes doctor
 uv run voice-notes devices
+
+# Start with local transcription only
+uv run voice-notes record --title "Weekly planning" --no-refine
 ```
 
-Or use `python3 -m venv .venv`, activate it, and `pip install -e '.[moonshine,dev]'`.
+Grant **Microphone** and **Screen & System Audio Recording** permissions to the terminal/helper when prompted. After changing permissions, quit and reopen the launching terminal or app. Use headphones to reduce remote voices being captured again by the microphone.
 
-The console launcher supports editable installs even if macOS marks their `.pth` import-path file hidden. It uses the installed package's checkout metadata to find the source, so running `uv run voice-notes` does not depend on repeatedly clearing file flags.
-
-Set `ANTHROPIC_API_KEY` in your shell for formatting. The SDK bundles its Claude Code executable. Existing supported Claude Code authentication may also work for personal use; API-key authentication is the reproducible route. Credentials are never written to meeting files.
-
-## Record a meeting
-
-Run this with any meeting app or browser. Microphone and all system audio are captured by default:
-
-```sh
-uv run voice-notes record --title "Weekly planning"
-```
-
-Apple's **SpeechAnalyzer** is the default local recognizer. It reuses system-managed speech assets or downloads the selected language's assets on first use. Press **Ctrl-C** to stop, finalize transcription, and generate notes with Haiku. This CLI starts and stops manually; it does not automatically detect meetings.
-
-A live audio meter appears at the bottom of an interactive terminal for each captured source:
+Speak and play meeting audio. The meters should respond:
 
 ```text
 Mic [#######.....]  -25 dB | Speaker [#########...]  -15 dB
 ```
 
-The bars show incoming volume before transcription. `silent` means audio frames are arriving with very little sound; `no audio` means no frames have arrived recently; `CLIP` indicates a peak near maximum volume. Meters work with both Apple and Moonshine. Use `--no-meter` to hide them. They automatically stay off when stderr is redirected or the terminal cannot redraw lines, and meter events are not saved in the transcript journal.
+Press **Ctrl-C once** to stop capture, finalize speech, and save `transcript.md`. The transcript appears after capture stops; finalized text is also journaled throughout the session. By default only finalized sentences are printed. `--partials` prints each tentative revision and is useful for debugging.
 
-Grant microphone and Screen & System Audio Recording permissions to the terminal/helper when macOS requests them. In System Settings → Privacy & Security, check both permissions and restart your terminal after changing them. `doctor` reports the current helper's permission status; microphone status `3` means authorized, `2` denied, `0` not requested, and `1` restricted.
+## Enable formatted notes
 
-If macOS reports `The user declined TCCs for application, window, display capture`, system-audio capture has not been authorized. Enable the terminal/app that launched this command (or Voice Notes Capture, if listed) under **Screen & System Audio Recording**, quit and reopen it, and start a new recording. A journal containing only that error has no transcript to recover. `--source mic` can record microphone audio while system-audio permission is unavailable.
-
-Use headphones: without acoustic echo cancellation, remote voices played through speakers can also appear on the microphone track. `Microphone` is a source label, not proof of a person's identity.
-
-Recording startup prints the selected microphone's name, UID, sample rate, and channel count, plus the application capture scope and macOS's default output device. The CLI's microphone selection is independent of your meeting app's setting. Use `voice-notes devices` to list available devices and choose your microphone:
+Copy the template and add your own [Claude Console API key](https://platform.claude.com/) to `.env`:
 
 ```sh
-uv run voice-notes record --mic "HyperX SoloCast 2" --title "Weekly planning"
+cp .env.example .env
+# Edit .env: ANTHROPIC_API_KEY=your-key
+uv run voice-notes record --title "Weekly planning"
 ```
 
-Names must match a listed input (case-insensitive); use its UID if names are ambiguous. A default output device is the macOS routing default; individual apps may use another device. All system audio is captured by default, including other apps, browser tabs, and notification sounds.
+The CLI loads `.env` **from the directory where you run it**, without overriding existing shell environment variables. `.env`, local recordings, and caches are ignored by Git. The default model is `claude-haiku-5-5`; `--model` selects another model available to your account.
+
+On stopping, the app sends the saved transcript text to Claude and writes `notes.md`. It checks authentication before SDK startup, isolates formatting in a worker process, and gives each part a 180-second deadline. Provider errors are shown instead of a blank failure message. API usage is billed by your provider.
+
+## Choose sources and devices
 
 ```sh
-# Moonshine's streaming models, with experimental remote speaker labels
-uv run voice-notes record --engine moonshine --speakers --title "Design review"
+# Select a listed microphone by name or UID
+uv run voice-notes record --mic "HyperX SoloCast 2" --title "Planning"
 
-# Entirely local transcription, with no Claude request
-uv run voice-notes record --no-refine
-
-# Optionally limit speaker capture to one app
-uv run voice-notes record --app com.apple.Safari
-
-# Microphone only; does not require screen recording permission
+# Microphone only; no screen recording permission needed
 uv run voice-notes record --source mic --duration 60 --no-refine
 
-# Display tentative text as well as finalized utterances
-uv run voice-notes record --partials
+# System audio only
+uv run voice-notes record --source system --no-refine
 
-# Choose a language and a specific Claude model, if needed
-uv run voice-notes record --locale en-US --model haiku
+# Optional application filter; default is all system audio
+uv run voice-notes record --app com.apple.Safari
+
+# Allow extra time for first-time permission prompts/model installation
+uv run voice-notes record --startup-timeout 300
 ```
 
-No meeting app is required. `--app all` is the default; optional `--app BUNDLE_ID` filtering depends on macOS audio attribution. A browser filter captures other audio from that browser too. A minimal screen output is registered and immediately discarded; no screen images are saved or analyzed. Microphone audio is captured separately through AVCaptureSession, bound to the selected device, for both single-source and combined recording. Multichannel inputs use their first channel for mono speech conversion, avoiding silent automatic downmixing on USB microphones. The final journal includes per-source frame counts and maximum RMS to help distinguish missing audio from silence.
+The CLI microphone selection is independent of the meeting app's selection. Names match case-insensitively; use the device UID if names are ambiguous. Startup prints the selected microphone and capture scope. The displayed output device is macOS's default routing device; apps may use a different output.
 
-## Output and recovery
+All system audio includes other tabs, apps, and notifications. App filtering depends on macOS audio attribution. A browser filter captures every audible tab in that browser.
 
-Each recording creates `meetings/YYYY-MM-DD_HH-MM-SS/`:
-
-- `meeting.json`: title, configuration, and start time.
-- `events.jsonl`: flushed event journal containing finalized transcript and speaker revisions.
-- `transcript.md`: source labels and timestamps, ordered by audio time.
-- `notes.md`: Haiku's summary, discussion, decisions, actions, and open questions.
-- `notes-part-NNN.md`: completed formatting checkpoints; long meetings retain all parts.
-
-Audio is streamed in memory and is **not saved**. Transcription stays local; default formatting sends transcript text to Anthropic. `--no-refine` skips that step. Claude gets no tools or project settings. Model edits can still be wrong; keep the raw transcript as the reference.
-
-If formatting fails, the transcript remains available. Retry:
+## Moonshine and speaker labels
 
 ```sh
-uv run voice-notes refine meetings/2026-10-10_10-30-00/events.jsonl
+uv sync --extra moonshine
+uv run voice-notes record --engine moonshine --no-refine
+uv run voice-notes record --engine moonshine --speakers --title "Design review"
 ```
 
-The latest speaker revision replaces the earlier label when rendering. Moonshine speaker IDs are anonymous, scoped to the remote stream, and may change during the recent clustering window. A line with several speakers lists those IDs together; detailed spans are retained in the journal. The CLI does not map voices to meeting participant names.
+Models are cached under `.cache/moonshine`. `--speakers` enables experimental diarization on the system-audio track only. Labels are anonymous IDs, may be revised later, and are not participant names. Apple recognition does not provide speaker identification in this app. Check the selected Moonshine model's upstream license before distributing its weights.
 
-First-time Moonshine setup downloads models to `.cache/moonshine`. Later use can reuse the cache. The installed version's language catalog determines availability and licensing; do not assume every model has the same license.
+## Saved files and recovery
 
-## Checks and current limits
+Each recording creates a directory under `meetings/`:
+
+| File | Contents |
+| --- | --- |
+| `meeting.json` | Title, start time, selected engine, sources, and model |
+| `events.jsonl` | Durable finalized speech, speaker revisions, statuses, and capture statistics |
+| `transcript.md` | Latest finalized text, ordered by audio timestamp |
+| `notes.md` | Completed Claude notes |
+| `notes-part-001.md` and `.json` | Formatting checkpoint and content fingerprints |
+
+If capture fails, saved speech is rendered before the error is reported. A crash can leave a truncated final journal line; recovery reads the earlier complete events. Empty recordings cannot be formatted.
+
+Retry formatting without recording again:
 
 ```sh
+uv run voice-notes refine meetings/YYYY-MM-DD_HH-MM-SS/events.jsonl
+```
+
+Completed parts are reused only when their text, model, formatting prompt, and saved-note fingerprint match. Changing the input or model regenerates affected parts. Delete a part's `.json` checkpoint to deliberately regenerate it. Long meetings retain separate formatted parts rather than compressing them into one potentially lossy summary.
+
+## Privacy and limits
+
+Audio is streamed in memory and **is not saved**. Local transcription uses public macOS APIs or Moonshine. Default formatting sends **transcript text** to Anthropic; `--no-refine` skips that request. Claude gets no tools, project settings, or project working directory. A minimal ScreenCaptureKit screen stream is discarded immediately; screen images are not saved or analyzed.
+
+The app starts and stops manually. It has no automatic meeting detection, participant-name lookup, or acoustic echo cancellation. Transcription and summaries can be wrong; retain the raw transcript as the reference. Speak clearly and verify decisions, names, numbers, and action ownership before sharing notes.
+
+## Development and documentation
+
+```sh
+uv sync --all-extras
 uv run pytest
-uv run voice-notes doctor
+uv run voice-notes build
+uv build
 ```
 
-The native helper compiles against the macOS 26 SDK. Unit tests cover journal recovery, speaker revisions, timestamp gaps, bounded formatting, and Claude/capture failure handling. A three-second microphone capture and clean shutdown passed on this Mac. Moonshine transcribed a bundled sample and produced speaker spans. A live meeting recording still needs screen/system audio permission and a live audio check. No ASR accuracy benchmark, live meeting validation, or authenticated Haiku request has been completed here.
+Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, and native microphone conversion. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. No accuracy or speaker-identification benchmark has been performed.
 
-See [the research and architecture notes](docs/research.md) for the built-in Apple models, Moonshine, older macOS alternatives, and primary-source links.
+- [Troubleshooting](docs/troubleshooting.md): permissions, silence, authentication, and stalled environments.
+- [Architecture](docs/architecture.md): capture, event protocol, persistence, and shutdown.
+- [Research](docs/research.md): Apple models, Moonshine, and implementation decisions with sources.
