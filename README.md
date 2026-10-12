@@ -2,10 +2,15 @@
 
 Record microphone and system audio, transcribe locally, and turn the transcript into Markdown notes with **Claude Agent SDK + `claude-haiku-5-5`**. Works with any meeting app or browser; no Zoom integration or audio routing driver is required.
 
+- Textual dashboard with colored meters, scrolling transcripts, notes preview, and keyboard controls.
 - Separate microphone and system tracks, with timestamps and live audio meters.
 - Apple SpeechAnalyzer by default; optional Moonshine recognition and anonymous speaker labels.
 - Local transcript journal that survives capture and formatting failures.
 - Optional Claude summaries, discussion, decisions, action items, and open questions.
+
+![Textual dashboard with synthetic meeting text](docs/images/dashboard.svg)
+
+*Dashboard preview uses synthetic meeting text.*
 
 ## Requirements
 
@@ -29,13 +34,24 @@ uv run voice-notes record --title "Weekly planning" --no-refine
 
 Grant **Microphone** and **Screen & System Audio Recording** permissions to the terminal/helper when prompted. After changing permissions, quit and reopen the launching terminal or app. Use headphones to reduce remote voices being captured again by the microphone.
 
-Speak and play meeting audio. The meters should respond:
+Interactive terminals open the **Textual dashboard** automatically. It shows the selected microphone, capture scope, elapsed time, colored audio meters, and Transcript / Notes / Activity tabs. Non-interactive terminals keep plain output.
+
+Speak and play meeting audio. In plain mode the meters look like:
 
 ```text
 Mic [#######.....]  -25 dB | Speaker [#########...]  -15 dB
 ```
 
-Press **Ctrl-C once** to stop capture, finalize speech, and save `transcript.md`. The transcript appears after capture stops; finalized text is also journaled throughout the session. By default only finalized sentences are printed. `--partials` prints each tentative revision and is useful for debugging.
+In the dashboard, press **Space** or click **Stop & save / Stop & format**. **Ctrl-C** stops recording; during formatting it cancels notes while preserving the transcript and completed checkpoints. **Q** safely exits, skipping or canceling formatting when necessary. **F** toggles transcript following, and **O** opens the session folder. The dashboard stays open after completion so you can read the notes or inspect errors.
+
+In plain mode, press **Ctrl-C once** to stop capture and save `transcript.md`. Finalized text is journaled during recording; `transcript.md` is rendered when capture stops. Plain mode prints only finalized sentences unless `--partials` is set. The dashboard always shows tentative speech in a compact updating area.
+
+Force either interface when needed:
+
+```sh
+uv run voice-notes record --ui textual --title "Planning"
+uv run voice-notes record --ui plain --title "Planning"
+```
 
 ## Enable formatted notes
 
@@ -121,7 +137,7 @@ uv run voice-notes build
 uv build
 ```
 
-Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, and native microphone conversion. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. No accuracy or speaker-identification benchmark has been performed.
+Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and headless Textual stop/save, cancellation, resizing, and error display. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. No accuracy or speaker-identification benchmark has been performed.
 
 - [Troubleshooting](docs/troubleshooting.md): permissions, silence, authentication, and stalled environments.
 - [Architecture](docs/architecture.md): capture, event protocol, persistence, and shutdown.

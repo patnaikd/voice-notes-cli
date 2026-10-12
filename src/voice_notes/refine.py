@@ -144,7 +144,7 @@ async def _sdk_ask(text: str, model: str) -> str:
         return result.strip() + "\n"
 
 
-async def refine(transcript: str, model: str, checkpoint_dir: Path) -> str:
+async def refine(transcript: str, model: str, checkpoint_dir: Path, *, progress=None) -> str:
     from .session import atomic_write
 
     parts = chunks(transcript)
@@ -152,7 +152,10 @@ async def refine(transcript: str, model: str, checkpoint_dir: Path) -> str:
         raise ValueError("The transcript is empty")
     formatted = []
     for index, part in enumerate(parts, 1):
-        print(f"Formatting part {index}/{len(parts)} with {model}…", file=sys.stderr, flush=True)
+        if progress:
+            progress({"type": "formatting_progress", "part": index, "total": len(parts), "reused": False})
+        else:
+            print(f"Formatting part {index}/{len(parts)} with {model}…", file=sys.stderr, flush=True)
         note_path = checkpoint_dir / f"notes-part-{index:03}.md"
         manifest_path = note_path.with_suffix(".json")
         fingerprint = hashlib.sha256(json.dumps(
@@ -166,7 +169,10 @@ async def refine(transcript: str, model: str, checkpoint_dir: Path) -> str:
                     and manifest.get("notes_sha256") == hashlib.sha256(cached.encode()).hexdigest()
                     and cached.strip()):
                 note = cached
-                print(f"Reusing saved part {index}/{len(parts)}.", file=sys.stderr, flush=True)
+                if progress:
+                    progress({"type": "formatting_progress", "part": index, "total": len(parts), "reused": True})
+                else:
+                    print(f"Reusing saved part {index}/{len(parts)}.", file=sys.stderr, flush=True)
         except (OSError, ValueError, UnicodeError):
             pass
         if note is None:

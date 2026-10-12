@@ -30,7 +30,9 @@ For speaker audio, play an audible source and use the default `--app all`. If th
 
 ## Transcript location and repeated text
 
-`Meeting files:` prints the recording directory. `events.jsonl` stores finalized speech during capture; `transcript.md` is rendered when capture stops or when you run `refine`. Lines prefixed with `…` are tentative revisions requested by `--partials`; omit that flag for quieter output. Partial text is not committed to the transcript.
+`Meeting files:` prints the recording directory. `events.jsonl` stores finalized speech during capture; `transcript.md` is rendered when capture stops or when you run `refine`. In plain mode, lines prefixed with `…` are tentative revisions requested by `--partials`; omit that flag for quieter output. The dashboard replaces tentative speech in place. Partial text is not committed to the transcript.
+
+If your terminal has trouble with full-screen redraws or mouse input, use `--ui plain`. Piped output and `TERM=dumb` automatically use plain mode. In the dashboard, Q waits for safe saving; Activity keeps errors visible until you exit.
 
 ## Claude authentication and formatting
 

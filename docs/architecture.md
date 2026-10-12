@@ -1,6 +1,6 @@
 # Architecture
 
-Python controls the session and formatting. A bundled Swift executable owns macOS audio capture and Apple recognition. The CLI compiles it on demand and caches it in `.build`.
+Textual provides the interactive recording dashboard; plain output remains available for pipes and scripts. Python controls the session and formatting. A bundled Swift executable owns macOS audio capture and Apple recognition. The CLI compiles it on demand and caches it in `.build`.
 
 ```mermaid
 flowchart TD
@@ -22,7 +22,9 @@ flowchart TD
 
 | Module | Role |
 | --- | --- |
-| `cli.py` | Argument parsing, `.env` loading, capture subprocess, startup deadline, signals, and session files |
+| `cli.py` | Argument parsing, `.env` loading, UI selection, capture subprocess, startup deadline, signals, and session files |
+| `tui.py` | Textual dashboard, live meters, transcript revisions, notes preview, and keyboard controls |
+| `control.py` | Thread-safe cooperative stop/quit and formatting cancellation |
 | `native.py` | macOS/SDK checks, bounded compilation/signing, atomic helper replacement |
 | `native/Capture.swift` | Device selection, independent audio tracks, conversion, levels, and Apple recognition |
 | `moonshine.py` | Optional streaming recognizers, timestamp gaps, and speaker-label revisions |
@@ -31,6 +33,12 @@ flowchart TD
 | `refine.py` | Authentication checks, chunking, worker deadline, verified checkpoint reuse |
 | `refine_worker.py` | SDK import and one tool-free Claude request per worker |
 | `packaging/_voice_notes_launcher.py` | Console entry point and hidden `.pth` editable-install recovery |
+
+## UI and backend boundary
+
+The dashboard runs the existing recording backend in a Textual thread worker. Observer events are posted as Textual messages; widgets are updated on the UI thread. Audio payloads stay in the recognizer and are never forwarded to the dashboard. High-rate levels and partial speech update existing widgets, while finalized text appears in the scrolling transcript. The visible transcript retains a bounded recent history; the journal retains the complete session.
+
+The same backend supports both interfaces. Plain-mode signal handlers run on the main thread. Dashboard controls use `SessionControl` callbacks instead, with pending stop requests honored after startup. Formatting cancellation is scheduled on its worker's asyncio loop and cleans up the isolated SDK process. Exit waits for finalization and saving rather than abandoning the capture process. The dashboard wrapper routes SIGINT to Stop and SIGTERM/SIGHUP to safe exit, restoring prior signal handlers when it closes.
 
 ## Events and timelines
 
