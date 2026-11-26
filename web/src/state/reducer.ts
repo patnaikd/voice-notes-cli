@@ -203,6 +203,12 @@ export function reducer(state: AppState, action: Action): AppState {
       delete meetings[action.id];
       return { ...state, meetings };
     }
+    case "segment_removed": {
+      if (!(action.id in state.segments)) return state;
+      const segments = { ...state.segments };
+      delete segments[action.id];
+      return { ...state, segments };
+    }
     case "speakers":
       return { ...state, speakers: action.speakers };
     case "job":

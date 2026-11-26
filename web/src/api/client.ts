@@ -79,12 +79,16 @@ export const api = {
   renameMeeting: (id: string, title: string) => request<Meeting>("PATCH", `/api/meetings/${enc(id)}`, { title }),
   mergeMeetings: (meeting_ids: string[]) => request<Meeting>("POST", "/api/meetings/merge", { meeting_ids }),
   splitMeeting: (id: string) => request<Meeting[]>("POST", `/api/meetings/${enc(id)}/split`),
+  deleteMeeting: (id: string) => request<{ deleted: string; trash: string }>("DELETE", `/api/meetings/${enc(id)}`),
+  deleteLines: (id: string, lines: { segment_id: string; source: string; id: string }[]) =>
+    request<{ meeting: Meeting; segments: Segment[] }>("POST", `/api/meetings/${enc(id)}/lines/delete`, { lines }),
   refineMeeting: (id: string) => request<Job>("POST", `/api/meetings/${enc(id)}/refine`),
   speakers: () => request<Speaker[]>("GET", "/api/speakers"),
   nameSpeaker: (id: string, name: string) => request<unknown>("POST", `/api/speakers/${enc(id)}/name`, { name }),
   mergeSpeakers: (source: string, target: string) =>
     request<unknown>("POST", "/api/speakers/merge", { source, target }),
   forgetSpeaker: (id: string) => request<unknown>("DELETE", `/api/speakers/${enc(id)}`),
+  exportDayUrl: (day: string) => `/api/export/day/${enc(day)}`,
   speakerSampleUrl: (id: string) => `/api/speakers/${enc(id)}/sample.wav`,
   health: () => request<Health>("GET", "/api/health"),
   jobs: () => request<Job[]>("GET", "/api/jobs"),

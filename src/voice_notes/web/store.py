@@ -1,6 +1,7 @@
 """index.json / state.json / jobs.json persistence and the segment/meeting model."""
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -31,6 +32,29 @@ def order(segment: dict) -> tuple[float, str]:
 
 def clock(value: float, seconds=False) -> str:
     return datetime.fromtimestamp(value).strftime("%H:%M:%S" if seconds else "%H:%M")
+
+
+def nest_markdown(text: str, top: int = 3) -> str:
+    """Drop a leading H1 (the meeting title, shown separately) and shift headings so the highest becomes `top`."""
+    lines = text.strip().splitlines()
+    if lines and lines[0].startswith("# "):
+        lines = lines[1:]
+    fenced, headings = False, []
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and re.match(r"#{1,6} ", line):
+            headings.append(index)
+    if headings:
+        shift = top - min(len(lines[i]) - len(lines[i].lstrip("#")) for i in headings)
+        for i in headings:
+            hashes = len(lines[i]) - len(lines[i].lstrip("#"))
+            lines[i] = "#" * max(1, min(6, hashes + shift)) + lines[i][hashes:]
+    return "\n".join(lines).strip()
+
+
+NOTES_MISSING = {"none": "No notes yet.", "queued": "Notes are queued.", "running": "Notes are being written.",
+                 "skipped": "No speech, so no notes.", "failed": "Notes failed."}
 
 
 def validate_settings(changes: dict, current: dict) -> dict:
@@ -134,7 +158,8 @@ class Store:
             meeting_id = secrets.token_hex(6)
         meeting = {"id": meeting_id, "title": title or "Meeting " + clock(epoch(segment["started_at"])),
                    "segment_ids": [segment["id"]], "started_at": segment["started_at"], "ended_at": segment["ended_at"],
-                   "notes_status": "none", "notes_error": None, "merged_by": None, "auto_merge_reason": None}
+                   "notes_status": "none", "notes_error": None, "notes_stale": False,
+                   "merged_by": None, "auto_merge_reason": None}
         self.meetings[meeting_id] = meeting
         segment["meeting_id"] = meeting_id
         return meeting
@@ -174,7 +199,64 @@ class Store:
             result.append(self.refresh_meeting(self.new_meeting(self.segments[segment_id])))
         return result
 
+    def delete_meeting(self, meeting_id: str) -> tuple[list[str], Path]:
+        """Move a meeting's folders to trash/ (recoverable by moving them back) and drop it from the index."""
+        meeting = self.meetings[meeting_id]
+        trash = self.root / "trash" / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{meeting_id}"
+        trash.mkdir(parents=True)
+        for segment_id in meeting["segment_ids"]:
+            folder = self.segment_dir(segment_id)
+            if folder.exists():
+                os.replace(folder, trash / segment_id)
+            self.segments.pop(segment_id, None)
+        merged = self.root / "merged" / meeting_id
+        if merged.exists():
+            os.replace(merged, trash / "merged")
+        del self.meetings[meeting_id]
+        return list(meeting["segment_ids"]), trash
+
+    def export_day(self, day) -> str | None:
+        """Markdown with the notes of every meeting that started on `day` (a date), or None if there are none."""
+        meetings = sorted((m for m in self.meetings.values()
+                           if datetime.fromtimestamp(epoch(m["started_at"])).date() == day),
+                          key=lambda m: epoch(m["started_at"]))
+        if not meetings:
+            return None
+        rows = [f"# Meeting notes: {day:%A, %B} {day.day}, {day:%Y}", "",
+                f"{len(meetings)} {'meeting' if len(meetings) == 1 else 'meetings'}", ""]
+        for meeting in meetings:
+            start = epoch(meeting["started_at"])
+            end = clock(epoch(meeting["ended_at"])) if meeting["ended_at"] else "now"
+            segments = len(meeting["segment_ids"])
+            rows += [f"## {meeting['title']}", "",
+                     f"*{clock(start)}–{end} · {segments} {'segment' if segments == 1 else 'segments'}*", ""]
+            notes = self.notes_dir(meeting) / "notes.md"
+            if notes.exists():
+                if meeting.get("notes_stale"):
+                    rows += ["> The transcript was edited after these notes were written.", ""]
+                rows += [nest_markdown(notes.read_text()), ""]
+            else:
+                reason = NOTES_MISSING.get(meeting["notes_status"], "No notes.")
+                if meeting["notes_status"] == "failed" and meeting.get("notes_error"):
+                    reason = f"Notes failed: {meeting['notes_error']}"
+                rows += [f"*{reason}*", ""]
+        return "\n".join(rows).rstrip() + "\n"
+
     # Transcripts
+
+    def delete_lines(self, segment: dict, keys: list[tuple[str, str]], title: str, registry=None) -> None:
+        """Append deletion events for (source, id) lines, then re-render the segment transcript."""
+        journal = self.segment_dir(segment["id"]) / "events.jsonl"
+        present = {(event["source"], event["id"]) for event in read_segments(journal)} if journal.exists() else set()
+        missing = [line_id for _, line_id in keys if (_, line_id) not in present]
+        if missing:
+            raise KeyError(f"Line(s) not found in segment {segment['id']}: {', '.join(missing)}")
+        with journal.open("a") as stream:
+            for source, line_id in keys:
+                stream.write(json.dumps({"type": "delete", "source": source, "id": line_id}) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        self.finish_segment(segment, title, registry)
 
     def segment_lines(self, segment: dict, registry=None) -> list[dict]:
         journal = self.segment_dir(segment["id"]) / "events.jsonl"

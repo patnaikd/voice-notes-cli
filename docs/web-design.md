@@ -84,6 +84,7 @@ interface Meeting {
   ended_at: string | null;
   notes_status: NotesStatus;
   notes_error: string | null;
+  notes_stale?: boolean;      // transcript lines were deleted after these notes were written
   merged_by: null | "user" | "auto";
   auto_merge_reason: string | null;
 }
@@ -95,7 +96,7 @@ interface Line {              // finalized transcript line
   end: number;
   wall: string;               // ISO wall-clock time of start
   text: string;
-  speaker: string;            // display label (registry name, "Unknown speaker xxxxxxxx", "Microphone", "Remote audio")
+  speaker: string;            // display label (registry name, or the 8-character ID "3f2a91c4" for an unnamed voice, "Microphone", "Remote audio")
   speaker_uuid: string | null;
 }
 interface Speaker { id: string; name: string | null; display_name: string; sample_seconds: number; created_at: string; has_sample: boolean; }
@@ -144,6 +145,7 @@ Every message is `{"type": string, ...}`. On connect the server sends a `snapsho
 | `segment` | `segment: Segment` (upsert) |
 | `meeting` | `meeting: Meeting` (upsert) |
 | `meeting_removed` | `id: string` |
+| `segment_removed` | `id: string` (its meeting was deleted) |
 | `speakers` | `speakers: Speaker[]` |
 | `job` | `job: Job` (upsert) |
 | `health` | `health: Health` (every 5 s) |
@@ -166,6 +168,9 @@ Every message is `{"type": string, ...}`. On connect the server sends a `snapsho
 | `PATCH /api/meetings/{id}` | `{title}` → `Meeting` |
 | `POST /api/meetings/merge` | `{meeting_ids: string[]}` (2+). Result keeps the earliest meeting's id and title, `merged_by:"user"`, re-queues notes → `Meeting` |
 | `POST /api/meetings/{id}/split` | split a merged meeting back into one meeting per segment; each gets notes re-queued unless its single-segment notes already exist → `Meeting[]` |
+| `DELETE /api/meetings/{id}` | moves the meeting's segment folders (and `merged/<id>/`) to `trash/<time>_<id>/`, removes it from the index, broadcasts `segment_removed` + `meeting_removed` → `{deleted, trash}`. 409 while recording or while its notes are being generated |
+| `POST /api/meetings/{id}/lines/delete` | `{lines: [{segment_id, source, id}]}` appends `{"type":"delete","source","id"}` events to each segment journal (append-only), re-renders `transcript.md`, sets `notes_stale` when notes exist → `{meeting, segments}`. 409 while a segment is recording |
+| `GET /api/export/day/{YYYY-MM-DD}` | `text/markdown` attachment `voice-notes-<day>.md`: every meeting that started that local day, in order, with its notes (headings nested under the meeting title). 404 when the day has no meetings |
 | `POST /api/meetings/{id}/refine` | re-queue notes → `Job` |
 | `GET /api/speakers` / `POST /api/speakers/{id}/name {name}` / `POST /api/speakers/merge {source, target}` / `DELETE /api/speakers/{id}` | registry operations; naming/merging re-renders affected transcripts and broadcasts `speakers` |
 | `GET /api/speakers/{id}/sample.wav` | `audio/wav` |

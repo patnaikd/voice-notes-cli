@@ -49,7 +49,7 @@ def test_fluid_recording_stores_uuids_and_renders_registry_names(tmp_path, monke
     meeting = next((tmp_path / "meetings").iterdir())
     transcript = (meeting / "transcript.md").read_text()
     assert "**Alice:** Ship it on Friday." in transcript
-    assert "**Unknown speaker 7c9e6679:** Agreed." in transcript
+    assert "**7c9e6679:** Agreed." in transcript
     journal = (meeting / "events.jsonl").read_text()
     assert ALICE in journal and "Alice" not in journal  # names are never journaled
     passed = arguments.read_text().split("\n")
@@ -67,7 +67,7 @@ def test_naming_a_speaker_corrects_earlier_meetings(tmp_path, monkeypatch, capsy
     assert cli.main(["--speakers-dir", str(speakers), "record", "--engine", "fluid",
                      "--output", str(meetings), "--no-refine"]) == 0
     transcript = next(meetings.iterdir()) / "transcript.md"
-    assert "Unknown speaker 7c9e6679" in transcript.read_text()
+    assert "**7c9e6679:**" in transcript.read_text()
     assert cli.main(["--speakers-dir", str(speakers), "speakers", "--meetings", str(meetings),
                      "name", "7c9e", "Bob Jones"]) == 0
     assert "**Bob Jones:** Agreed." in transcript.read_text()
@@ -152,7 +152,8 @@ def test_real_models_enroll_distinct_voices_and_recognize_them_again(tmp_path):
     assert len(enrolled) == 2
     assert all(speaker["has_sample"] for speaker in enrolled)
     transcript = (next((tmp_path / "first").iterdir()) / "transcript.md").read_text()
-    assert transcript.count("Unknown speaker") >= 4
+    short_ids = {speaker["id"][:8] for speaker in enrolled}
+    assert sum(transcript.count(f"**{short}:**") for short in short_ids) >= 4
     # A second recording must recognize the same two voices instead of enrolling new ones.
     assert record("second") == 0
     assert {speaker["id"] for speaker in registry.list()} == {speaker["id"] for speaker in enrolled}

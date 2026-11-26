@@ -83,7 +83,7 @@ class SpeakerRegistry:
         identifier = self.resolve(identifier)
         data = self.read(identifier)
         name = data.get("name") if data else None
-        return name if isinstance(name, str) and name.strip() else f"Unknown speaker {short_id(identifier)}"
+        return name if isinstance(name, str) and name.strip() else short_id(identifier)
 
     def list(self) -> list[dict]:
         speakers = []

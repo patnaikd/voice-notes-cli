@@ -28,6 +28,13 @@ function SocketConnector({ store }: { store: Store }) {
 function Shell({ store }: { store: Store }) {
   const [openMeeting, setOpenMeeting] = useState<string | null>(null);
   const closeDrawer = useCallback(() => setOpenMeeting(null), []);
+  const [sideCollapsed, setSideCollapsed] = useState(() => readFlag(SIDE_KEY));
+  const toggleSide = useCallback(() => {
+    setSideCollapsed((collapsed) => {
+      writeFlag(SIDE_KEY, !collapsed);
+      return !collapsed;
+    });
+  }, []);
 
   useEffect(() => {
     setApiErrorHandler((message) => store.dispatch({ type: "toast", level: "error", message }));
@@ -38,7 +45,7 @@ function Shell({ store }: { store: Store }) {
     <div className="app">
       <RecorderBar />
       <StatusBanner />
-      <main className="layout">
+      <main className={`layout${sideCollapsed ? " layout-side-collapsed" : ""}`}>
         <section className="col col-live" aria-label="Live transcript">
           <LivePanel />
         </section>
@@ -46,11 +53,29 @@ function Shell({ store }: { store: Store }) {
           <MeetingsTimeline onOpen={setOpenMeeting} />
         </section>
         <aside className="col col-side" aria-label="Speakers and health">
-          <SidePanel />
+          <SidePanel collapsed={sideCollapsed} onToggle={toggleSide} />
         </aside>
       </main>
       {openMeeting && <MeetingDrawer meetingId={openMeeting} onClose={closeDrawer} />}
       <Toasts />
     </div>
   );
+}
+
+const SIDE_KEY = "voice-notes.side-collapsed";
+
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, value: boolean): void {
+  try {
+    window.localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    /* private mode or storage disabled */
+  }
 }

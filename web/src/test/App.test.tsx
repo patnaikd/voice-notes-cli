@@ -135,9 +135,9 @@ describe("App", () => {
   it("relabels live lines when a speaker is named", () => {
     const uuid = "3f2a91c4-0000-4000-8000-000000000001";
     const store = renderWith({
-      live: { segment_id: "s1", lines: [line("a", { source: "system", speaker: "Unknown speaker 3f2a91c4", speaker_uuid: uuid })] },
+      live: { segment_id: "s1", lines: [line("a", { source: "system", speaker: "3f2a91c4", speaker_uuid: uuid })] },
     });
-    expect(screen.getByTestId("live-line").textContent).toContain("Unknown speaker 3f2a91c4");
+    expect(screen.getByTestId("live-line").textContent).toContain("3f2a91c4");
     act(() =>
       store.dispatch({
         type: "speakers",
@@ -145,5 +145,51 @@ describe("App", () => {
       }),
     );
     expect(screen.getByTestId("live-line").textContent).toContain("Alice");
+  });
+
+  it("collapses the side panel into a rail and remembers it", () => {
+    window.localStorage.clear();
+    renderWith();
+    expect(screen.getByTestId("tab-health")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("side-toggle"));
+    expect(screen.getByTestId("side-rail")).toBeTruthy();
+    expect(screen.queryByTestId("tab-health")).toBeNull();
+    expect(window.localStorage.getItem("voice-notes.side-collapsed")).toBe("1");
+    fireEvent.click(screen.getByTestId("side-toggle"));
+    expect(screen.getByTestId("tab-health")).toBeTruthy();
+    expect(window.localStorage.getItem("voice-notes.side-collapsed")).toBe("0");
+  });
+
+  it("deletes a meeting after confirmation and marks outdated notes", async () => {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === "/api/meetings/m1" && init?.method === "DELETE") return jsonResponse({ deleted: "m1", trash: "/x" });
+      return jsonResponse({ detail: "not found" }, 404);
+    });
+    renderWith({
+      segments: [seg("s1", { meeting_id: "m1" }), seg("s2", { meeting_id: "m2", started_at: "2026-11-25T16:00:00-08:00" })],
+      meetings: [
+        meeting("m1", { segment_ids: ["s1"], title: "Standup" }),
+        meeting("m2", { segment_ids: ["s2"], title: "Review", notes_status: "done", notes_stale: true }),
+      ],
+    });
+    const review = screen.getAllByTestId("meeting-card").find((c) => c.textContent?.includes("Review"))!;
+    expect(within(review).getByTestId("notes-status").textContent).toBe("Notes outdated");
+    const standup = screen.getAllByTestId("meeting-card").find((c) => c.textContent?.includes("Standup"))!;
+    fireEvent.click(within(standup).getByTestId("delete-meeting-btn"));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("confirm-btn"));
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/meetings/m1", expect.objectContaining({ method: "DELETE" }));
+    expect(screen.getAllByTestId("meeting-card").map((c) => c.textContent)).toEqual([expect.stringContaining("Review")]);
+  });
+
+  it("offers a Markdown export for each day of meetings", () => {
+    renderWith({
+      segments: [seg("s1", { meeting_id: "m1", started_at: "2026-11-24T09:00:00-08:00" })],
+      meetings: [meeting("m1", { segment_ids: ["s1"], started_at: "2026-11-24T09:00:00-08:00" })],
+    });
+    const link = screen.getByTestId("export-day") as HTMLAnchorElement;
+    const key = link.getAttribute("download")!.match(/voice-notes-(\d{4}-\d{2}-\d{2})\.md/)![1];
+    expect(link.getAttribute("href")).toBe(`/api/export/day/${key}`);
   });
 });
