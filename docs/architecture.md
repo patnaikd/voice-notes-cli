@@ -10,9 +10,9 @@ flowchart TD
     C --> H
     H --> L[Live audio meters]
     H --> P[Apple SpeechAnalyzer]
-    H --> V[PCM events to Python Moonshine]
+    H --> F[FluidAudio recognition and speaker identity]
     P --> J[Finalized event journal]
-    V --> J
+    F --> J
     J --> T[Markdown transcript]
     T --> W[Isolated Claude Agent SDK worker]
     W --> N[Checkpoints and final notes]
@@ -36,7 +36,6 @@ flowchart TD
 | `native/Sources/voice-notes-capture/FluidEngine.swift` | Per-track streaming recognition, diarization, and speaker matching for `--engine fluid` |
 | `native/Sources/voice-notes-capture/SpeakerRegistry.swift` | Speaker store: embeddings, UUIDs, 60 s samples, atomic writes |
 | `speakers.py` | Registry reads, naming, merging, deleting, and retroactive transcript re-rendering |
-| `moonshine.py` | Optional streaming recognizers, timestamp gaps, and speaker-label revisions |
 | `meter.py` | Terminal redraw thread and RMS/peak display |
 | `session.py` | Journal validation, latest-segment selection, Markdown rendering, atomic writes |
 | `refine.py` | Authentication checks, chunking, worker deadline, verified checkpoint reuse |
@@ -49,11 +48,11 @@ One asyncio event loop runs everything. The supervisor reads helper stdout with 
 
 ## Events and timelines
 
-The helper emits one JSON object per stdout line. Its writes are serialized. `ready`, `status`, `error`, `level`, `partial`, `segment`, and `capture_stats` describe the session. Moonshine mode also emits base64 float32 `audio` events at 16 kHz mono; those samples stay in memory and are not journaled.
+The helper emits one JSON object per stdout line. Its writes are serialized. `ready`, `status`, `error`, `level`, `partial`, `segment`, and `capture_stats` describe the session.
 
-A finalized segment contains a source (`mic` or `system`), stable string ID, start/end seconds, and text. Speaker spans are optional. Segment events are validated before journaling. Later events with the same source and ID replace earlier versions when rendering; this supports speaker revisions without duplicate transcript lines.
+A finalized segment contains a source (`mic` or `system`), stable string ID, start/end seconds, and text. An optional `speaker_uuid` names the registry voice (fluid engine). Segment events are validated before journaling. Later events with the same source and ID replace earlier versions when rendering; this supports speaker revisions without duplicate transcript lines.
 
-Each source retains a shared presentation-time origin. Apple conversion ensures resampled buffers do not overlap. Moonshine fills timestamp gaps with bounded silence chunks and drops overlapping samples. RMS and peak levels are emitted approximately every 100 ms; meters display incoming sound independently of recognition.
+Each source retains a shared presentation-time origin. Apple conversion ensures resampled buffers do not overlap. RMS and peak levels are emitted approximately every 100 ms; meters display incoming sound independently of recognition.
 
 ## Persistence and shutdown
 

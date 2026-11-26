@@ -4,7 +4,7 @@ Record microphone and system audio, transcribe locally, and turn the transcript 
 
 - Browser interface for all-day recording: live meters and transcript, 30-minute segments, automatic meeting grouping, and notes generated in the background.
 - Separate microphone and system tracks, with timestamps and live audio meters.
-- Apple SpeechAnalyzer by default; optional Moonshine recognition and anonymous speaker labels.
+- Apple SpeechAnalyzer by default, or FluidAudio (`--engine fluid`) for named speakers.
 - Local transcript journal that survives capture and formatting failures.
 - Named speaker identification in real time (`--engine fluid`): unknown voices are enrolled automatically; you listen to a saved sample, name them once, and every past transcript is corrected.
 - Optional Claude summaries, discussion, decisions, action items, and open questions.
@@ -13,7 +13,7 @@ Record microphone and system audio, transcribe locally, and turn the transcript 
 
 An **Apple Silicon Mac running macOS 26 or later**, Python **3.12+**, and Xcode or Command Line Tools with the **macOS 26 SDK**. Use `xcode-select --install` if Command Line Tools are missing. [uv](https://docs.astral.sh/uv/getting-started/installation/) manages Python dependencies.
 
-The first build fetches and compiles the pinned [FluidAudio](https://github.com/FluidInference/FluidAudio) Swift package, which needs network access and several minutes. First-time speech recognition can download language assets. Moonshine downloads its own models. The `--engine fluid` CoreML models (about 850 MB) are stored in this repository with Git LFS under `models/fluid`; install [Git LFS](https://git-lfs.com/) and run `git lfs pull` after cloning, or the helper downloads them from Hugging Face on first use instead (see [models/README.md](models/README.md)). Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
+The first build fetches and compiles the pinned [FluidAudio](https://github.com/FluidInference/FluidAudio) Swift package, which needs network access and several minutes. First-time speech recognition can download language assets. The `--engine fluid` CoreML models (about 850 MB) are stored in this repository with Git LFS under `models/fluid`; install [Git LFS](https://git-lfs.com/) and run `git lfs pull` after cloning, or the helper downloads them from Hugging Face on first use instead (see [models/README.md](models/README.md)). Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
 
 ## Quick start
 
@@ -119,15 +119,7 @@ Journals (`events.jsonl`) store only UUIDs. Naming a speaker re-renders `transcr
 
 Matching uses cosine similarity of voice embeddings; `--speaker-threshold` (default 0.70) trades merging two people against splitting one. Short interjections inherit the speaker the diarizer last placed in the same slot, and Sortformer separates at most four simultaneous speakers per track. Test without a microphone by transcribing a recording: `voice-notes record --engine fluid --input-file meeting.wav` (add `--input-realtime` to feed it at live speed).
 
-## Moonshine and speaker labels
-
-```sh
-uv sync --extra moonshine
-uv run voice-notes record --engine moonshine --no-refine
-uv run voice-notes record --engine moonshine --speakers --title "Design review"
-```
-
-Models are cached under `.cache/moonshine`. `--speakers` enables experimental diarization on the system-audio track only. Labels are anonymous IDs, may be revised later, and are not participant names. Apple recognition does not provide speaker identification in this app. Check the selected Moonshine model's upstream license before distributing its weights.
+Apple recognition does not provide speaker identification in this app; transcripts label its lines "Microphone" or "Remote audio".
 
 ## Saved files and recovery
 
@@ -153,7 +145,7 @@ Completed parts are reused only when their text, model, formatting prompt, and s
 
 ## Privacy and limits
 
-Audio is streamed in memory and **is not saved**, with one exception: `--engine fluid` keeps up to 60 seconds of each enrolled speaker's speech (`sample.wav`) plus a voice embedding in the speaker registry, so you can identify them later. These are biometric data about everyone you record; keep the registry private, ask participants, and delete voices with `voice-notes speakers forget`. Local transcription uses public macOS APIs, Moonshine, or FluidAudio. Default formatting sends **transcript text** to Anthropic; `--no-refine` skips that request. Claude gets no tools, project settings, or project working directory. A minimal ScreenCaptureKit screen stream is discarded immediately; screen images are not saved or analyzed.
+Audio is streamed in memory and **is not saved**, with one exception: `--engine fluid` keeps up to 60 seconds of each enrolled speaker's speech (`sample.wav`) plus a voice embedding in the speaker registry, so you can identify them later. These are biometric data about everyone you record; keep the registry private, ask participants, and delete voices with `voice-notes speakers forget`. Local transcription uses public macOS APIs or FluidAudio. Default formatting sends **transcript text** to Anthropic; `--no-refine` skips that request. Claude gets no tools, project settings, or project working directory. A minimal ScreenCaptureKit screen stream is discarded immediately; screen images are not saved or analyzed.
 
 The app starts and stops manually. It has no automatic meeting detection, participant-name lookup, or acoustic echo cancellation. Transcription and summaries can be wrong; retain the raw transcript as the reference. Speak clearly and verify decisions, names, numbers, and action ownership before sharing notes.
 
@@ -170,4 +162,4 @@ Tests exercise recovery, partial checkpoints, malformed events, capture startup 
 
 - [Troubleshooting](docs/troubleshooting.md): permissions, silence, authentication, and stalled environments.
 - [Architecture](docs/architecture.md): capture, event protocol, persistence, and shutdown.
-- [Research](docs/research.md): Apple models, Moonshine, and implementation decisions with sources.
+- [Research](docs/research.md): Apple models, FluidAudio, and implementation decisions with sources.

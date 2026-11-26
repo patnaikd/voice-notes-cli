@@ -167,45 +167,6 @@ def test_revision_for_a_closed_segment_is_not_duplicated(tmp_path):
     asyncio.run(scenario())
 
 
-def test_moonshine_audio_is_fed_off_the_event_loop():
-    import threading
-
-    from voice_notes.web.recorder import AudioFeeder
-
-    class Slow:
-        def __init__(self):
-            self.threads, self.chunks, self.closed = set(), [], False
-
-        def audio(self, event):
-            time.sleep(0.01)
-            self.threads.add(threading.current_thread().name)
-            self.chunks.append(event["n"])
-
-        def close(self):
-            self.closed = True
-
-    recognizer, errors = Slow(), []
-    feeder = AudioFeeder(recognizer, errors.append, limit=1000)
-    started = time.monotonic()
-    for n in range(50):
-        feeder.put({"n": n})
-    assert time.monotonic() - started < 0.05  # put never waits for decoding
-    feeder.close()
-    assert recognizer.chunks == list(range(50)) and recognizer.closed
-    assert recognizer.threads == {"moonshine-audio"} and not errors
-    # A full queue drops the oldest audio instead of growing or blocking.
-    blocked = threading.Event()
-    recognizer = Slow()
-    recognizer.audio = lambda event: (blocked.wait(5), recognizer.chunks.append(event["n"]))
-    feeder = AudioFeeder(recognizer, errors.append, limit=3)
-    for n in range(10):
-        feeder.put({"n": n})
-    assert feeder.dropped >= 6 and feeder.queue.qsize() <= 3
-    blocked.set()
-    feeder.close()
-    assert recognizer.chunks[-1] == 9
-
-
 # End-to-end with the fake helper
 
 

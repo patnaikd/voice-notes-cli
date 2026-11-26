@@ -89,7 +89,7 @@ export interface Health {
   warnings: string[];
 }
 
-export type Engine = "apple" | "moonshine" | "fluid";
+export type Engine = "apple" | "fluid";
 export type SourceSetting = "both" | "mic" | "system";
 
 export interface Settings {

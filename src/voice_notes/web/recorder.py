@@ -3,8 +3,6 @@ import asyncio
 import json
 import logging
 import os
-import queue
-import threading
 import time
 from collections import OrderedDict, deque
 from contextlib import suppress
@@ -48,44 +46,6 @@ class OpenSegment:
         return self.record["id"]
 
 
-class AudioFeeder:
-    """Feed Moonshine from a worker thread so decoding never blocks the event loop. The queue is bounded;
-    when decoding falls behind, the oldest chunk is dropped (Timeline fills the gap with silence)."""
-
-    def __init__(self, recognizer, on_error, limit: int = 300):
-        self.recognizer, self.on_error = recognizer, on_error
-        self.queue: queue.Queue = queue.Queue(maxsize=limit)
-        self.dropped = 0
-        self.failed = False
-        self.thread = threading.Thread(target=self._run, name="moonshine-audio", daemon=True)
-        self.thread.start()
-
-    def put(self, event: dict):
-        try:
-            self.queue.put_nowait(event)
-        except queue.Full:
-            with suppress(queue.Empty):
-                self.queue.get_nowait()
-            self.dropped += 1
-            with suppress(queue.Full):
-                self.queue.put_nowait(event)
-
-    def _run(self):
-        while (event := self.queue.get()) is not None:
-            try:
-                self.recognizer.audio(event)
-            except Exception as error:
-                if not self.failed:  # report once; a broken stream would otherwise flood the log
-                    self.failed = True
-                    self.on_error(error)
-
-    def close(self):
-        """Drain queued audio, then finalize the recognizer. Blocking: run it in a thread."""
-        self.queue.put(None)
-        self.thread.join()
-        self.recognizer.close()
-
-
 class Recorder:
     def __init__(self, server):
         self.server = server
@@ -102,7 +62,6 @@ class Recorder:
         self.next_boundary: float | None = None
         self.memory_restart = False
         self.dirty: set[str] = set()
-        self.recognizer = None
         self._lock = asyncio.Lock()
         self._boundary_task: asyncio.Task | None = None
         self.close_tasks: set[asyncio.Task] = set()
@@ -157,8 +116,6 @@ class Recorder:
             store.save_state()
             try:
                 command = await self.server.helper_command(store.settings)
-                if store.settings["engine"] == "moonshine":
-                    await self._load_moonshine()
             except BaseException:
                 if not resumed:  # a failed manual start must not auto-start after the next server restart
                     store.recording_desired = False
@@ -187,9 +144,6 @@ class Recorder:
                 self._boundary_task.cancel()
                 self._boundary_task = None
             await self.supervisor.stop(self.server.config.stop_grace)
-            if self.recognizer:
-                await asyncio.to_thread(self.recognizer.close)
-                self.recognizer = None
             for segment in list(self.open):
                 await self._close(segment, segment.end or time.time())
             await asyncio.gather(*self.close_tasks, return_exceptions=True)
@@ -310,10 +264,6 @@ class Recorder:
             self.partials[event["source"]] = {"source": event["source"], "text": event.get("text", ""),
                                               "speaker": None}
             return
-        if kind == "audio":
-            if self.recognizer:
-                self.recognizer.put(event)
-            return
         if kind == "segment":
             self._route(event, run, origin if origin is not None else time.time())
             return
@@ -366,21 +316,6 @@ class Recorder:
                 self.live.append(payload)
         self.server.hub.broadcast("line", line=payload)
         self.partials[event["source"]] = {"source": event["source"], "text": "", "speaker": None}
-
-    async def _load_moonshine(self):
-        from ..moonshine import Moonshine
-        settings, loop = self.server.store.settings, asyncio.get_running_loop()
-        sources = ["mic", "system"] if settings["source"] == "both" else [settings["source"]]
-
-        def emit(event):  # recognizer threads hand events back to the loop
-            loop.call_soon_threadsafe(self._on_event, event, self.supervisor.run, self.supervisor.origin)
-
-        self.server.activity("info", "Loading Moonshine models (first use downloads assets)…")
-        def failed(error):
-            loop.call_soon_threadsafe(self.server.error, f"Moonshine decoding failed: {error}", error)
-
-        recognizer = await asyncio.to_thread(Moonshine, sources, "en", False, Path(".cache/moonshine"), emit)
-        self.recognizer = AudioFeeder(recognizer, failed)
 
     def relabel_live(self):
         """After naming, merging or forgetting a speaker, resend live lines whose label changed."""

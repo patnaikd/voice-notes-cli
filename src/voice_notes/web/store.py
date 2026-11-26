@@ -39,8 +39,8 @@ def validate_settings(changes: dict, current: dict) -> dict:
     for key, value in changes.items():
         if key not in DEFAULT_SETTINGS:
             raise ValueError(f"Unknown setting {key!r}")
-        if key == "engine" and value not in ("apple", "moonshine", "fluid"):
-            raise ValueError("engine must be apple, moonshine, or fluid")
+        if key == "engine" and value not in ("apple", "fluid"):
+            raise ValueError("engine must be apple or fluid")
         if key == "source" and value not in ("both", "mic", "system"):
             raise ValueError("source must be both, mic, or system")
         if key == "mic" and value is not None and not isinstance(value, str):

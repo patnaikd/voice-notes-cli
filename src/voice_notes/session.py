@@ -60,12 +60,7 @@ def speaker_label(segment: dict, registry=None) -> str:
         if registry is not None:
             return registry.display_name(identifier)
         return f"Unknown speaker {identifier[:8].lower()}"
-    label = "Microphone" if segment["source"] == "mic" else "Remote audio"
-    speakers = sorted({str(s["speaker_id"]) for s in segment.get("speakers", [])
-                       if s.get("speaker_id") is not None and s["speaker_id"] >= 0})
-    if speakers and segment["source"] == "system":
-        label += " (speaker " + ", ".join(speakers) + ")"
-    return label
+    return "Microphone" if segment["source"] == "mic" else "Remote audio"
 
 
 def render_transcript(segments: list[dict], title: str, registry=None) -> str:

@@ -36,7 +36,7 @@ uv run voice-notes service install|uninstall|status   # launchd agent with KeepA
 - After a boundary, the previous segment stays open for a **grace period** (default `min(20 s, half a segment)`) to receive late finalizations, then closes. Close = render `transcript.md`, set status, enqueue LLM jobs.
 - Boundaries use elapsed seconds since local midnight (resolved with `mktime`, so DST days work) and are capped at the next local midnight. With the default 30 minutes they fall on wall-clock `:00`/`:30` on every day, including DST change days.
 - Segment journal format is unchanged from the CLI (`events.jsonl` + `meeting.json` + `transcript.md` + `notes*.md`), so `voice-notes refine` still works on a segment folder. `meeting.json` gets extra keys: `"segment_start"`, `"segment_end"` (ISO 8601 with offset), `"kind": "segment"`.
-- Level events: coalesce and broadcast at most 10 per second. Partial events: broadcast at most 5 per second per source (latest wins). Never journal levels or partials. Moonshine `audio` events stay in memory as today and are decoded on a worker thread (bounded queue, oldest audio dropped when it falls behind), never on the event loop.
+- Level events: coalesce and broadcast at most 10 per second. Partial events: broadcast at most 5 per second per source (latest wins). Never journal levels or partials.
 
 ## On-disk layout (`--data-dir`, default `meetings/`)
 
@@ -124,7 +124,7 @@ interface Health {
   disk_free_gb: number;
   warnings: string[];                // e.g. "Server memory above 1024 MB", "No audio level for 120 s"
 }
-interface Settings { engine: "apple" | "moonshine" | "fluid"; source: "both" | "mic" | "system"; mic: string | null; model: string; segment_minutes: number; auto_merge: boolean; auto_merge_min_confidence: number; }
+interface Settings { engine: "apple" | "fluid"; source: "both" | "mic" | "system"; mic: string | null; model: string; segment_minutes: number; auto_merge: boolean; auto_merge_min_confidence: number; }
 interface Job { id: string; kind: "notes" | "continuation"; target: string; status: "queued" | "running" | "done" | "failed"; attempts: number; error: string | null; created_at: string; }
 ```
 

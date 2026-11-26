@@ -17,7 +17,6 @@ const STATE_LABEL: Record<RecorderState, string> = {
 const ENGINES: { value: Engine; label: string }[] = [
   { value: "fluid", label: "Fluid (speakers)" },
   { value: "apple", label: "Apple" },
-  { value: "moonshine", label: "Moonshine" },
 ];
 
 const SOURCES: { value: SourceSetting; label: string }[] = [

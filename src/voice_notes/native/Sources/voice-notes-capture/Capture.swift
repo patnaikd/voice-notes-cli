@@ -143,7 +143,7 @@ final class AppleTrack {
     static func create(source: String, locale: Locale) async throws -> AppleTrack {
         guard SpeechTranscriber.isAvailable,
               let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
-            throw Failure(message: "Apple SpeechTranscriber is unavailable for \(locale.identifier); try --engine moonshine")
+            throw Failure(message: "Apple SpeechTranscriber is unavailable for \(locale.identifier); try another --locale")
         }
         let transcriber = SpeechTranscriber(locale: supported,
             transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
@@ -249,10 +249,6 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
                 fluid.add(Array(UnsafeBufferPointer(start: samples, count: Int(pcm.frameLength))), at: seconds)
             } else if let track = tracks[source] {
                 try track.add(buffer, at: seconds)
-            } else {
-                let data = Data(bytes: samples, count: Int(pcm.frameLength) * MemoryLayout<Float>.size)
-                emit(["type": "audio", "source": source, "start": seconds,
-                      "sample_rate": 16000, "pcm": data.base64EncodedString()])
             }
         } catch {
             emit(["type": "error", "message": "Audio conversion: \(error.localizedDescription)"])
@@ -436,6 +432,9 @@ final class StopFlag {
             }
             let source = option("--source", "both")
             let engine = option("--engine", "apple")
+            guard engine == "apple" || engine == "fluid" else {
+                throw Failure(message: "Unknown --engine \(engine); use apple or fluid")
+            }
             let (stops, continuation) = AsyncStream<Void>.makeStream()
             let stopFlag = StopFlag()
             signal(SIGINT, SIG_IGN)

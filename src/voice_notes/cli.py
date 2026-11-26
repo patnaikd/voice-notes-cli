@@ -33,11 +33,9 @@ def format_notes(journal: Path, title: str, model: str, *, registry=None) -> Pat
 
 
 def record(args):
-    if args.speakers and args.engine != "moonshine":
-        raise ValueError("--speakers requires --engine moonshine; --engine fluid always identifies speakers")
     input_file = getattr(args, "input_file", None)
     if args.engine == "fluid" and not args.locale.lower().startswith("en"):
-        raise ValueError("--engine fluid transcribes English only; use --engine apple or moonshine for other languages")
+        raise ValueError("--engine fluid transcribes English only; use --engine apple for other languages")
     if input_file:
         if args.engine != "fluid":
             raise ValueError("--input-file requires --engine fluid")
@@ -53,7 +51,7 @@ def record(args):
     atomic_write(directory / "meeting.json", json.dumps({
         "title": args.title, "started_at": datetime.now().astimezone().isoformat(),
         "engine": args.engine, "source": args.source, "app": args.app,
-        "speakers": args.speakers, "locale": args.locale, "model": args.model,
+        "locale": args.locale, "model": args.model,
         "microphone": args.mic or "system default",
         **({"speakers_dir": str(Path(args.speakers_dir).resolve())} if args.engine == "fluid" else {}),
         **({"input_file": str(Path(input_file).resolve())} if input_file else {}),
@@ -66,9 +64,6 @@ def record(args):
         def receive(event):
             if event["type"] == "level":
                 meter.update(event["source"], event["rms"], event["peak"])
-                return
-            if event["type"] == "audio":
-                recognizer.audio(event)
                 return
             if event["type"] != "partial":
                 journal.write(json.dumps(event) + "\n")
@@ -87,7 +82,6 @@ def record(args):
             if event["type"] == "ready":
                 meter.start()
 
-        recognizer = None
         process = None
         deadline = args.startup_timeout or startup_timeout(args.engine)
         timer = None
@@ -114,11 +108,6 @@ def record(args):
                 process.kill()
 
         try:
-            if args.engine == "moonshine":
-                from .moonshine import Moonshine
-                print("Loading Moonshine models (first use downloads assets)…", file=sys.stderr)
-                recognizer = Moonshine(sources, args.locale.split("-")[0].split("_")[0], args.speakers,
-                                       args.model_cache, receive)
             if threading.current_thread() is threading.main_thread():
                 for number in (signal.SIGINT, signal.SIGTERM):
                     old_signals[number] = signal.signal(number, stop)
@@ -179,12 +168,8 @@ def record(args):
                 startup_timer.cancel()
             for number, handler in old_signals.items():
                 signal.signal(number, handler)
-            try:
-                if recognizer:
-                    recognizer.close()
-            finally:
-                atomic_write(directory / "transcript.md",
-                             render_transcript(read_segments(journal_path), args.title, registry))
+            atomic_write(directory / "transcript.md",
+                         render_transcript(read_segments(journal_path), args.title, registry))
     print(f"Transcript saved: {directory / 'transcript.md'}", file=sys.stderr)
     if failures:
         has_speech = any(segment["text"].strip() for segment in read_segments(journal_path))
@@ -197,7 +182,7 @@ def record(args):
 
 def doctor(args):
     print(f"macOS: {platform.mac_ver()[0] or 'not macOS'}; architecture: {platform.machine()}")
-    for package in ("claude-agent-sdk", "moonshine-voice"):
+    for package in ("claude-agent-sdk",):
         try:
             print(f"{package}: {importlib.metadata.version(package)}")
         except importlib.metadata.PackageNotFoundError:
@@ -305,8 +290,8 @@ def main(argv=None):
     sub.add_parser("build", help="Compile the native capture helper")
     sub.add_parser("devices", help="List microphones and output devices, including system defaults")
     rec = sub.add_parser("record", help="Start recording; stop and format with Ctrl-C")
-    rec.add_argument("--engine", choices=["apple", "moonshine", "fluid"], default="apple",
-                     help="apple: Apple SpeechAnalyzer; moonshine: Moonshine; "
+    rec.add_argument("--engine", choices=["apple", "fluid"], default="apple",
+                     help="apple: Apple SpeechAnalyzer; "
                           "fluid: FluidAudio streaming recognition with named speaker identification (English)")
     rec.add_argument("--speaker-threshold", type=float, default=0.70,
                      help="Voice similarity (0-1) needed to match a known speaker with --engine fluid (default: 0.70)")
@@ -317,7 +302,6 @@ def main(argv=None):
     rec.add_argument("--mic", help="Input device name or UID (default: macOS default input)")
     rec.add_argument("--title", default="Meeting")
     rec.add_argument("--locale", default="en-US")
-    rec.add_argument("--speakers", action="store_true", help="Experimental Moonshine remote speaker diarization")
     rec.add_argument("--partials", action="store_true", help="Also print in-progress text")
     rec.add_argument("--no-meter", action="store_true", help="Hide live microphone and speaker audio meters")
     rec.add_argument("--duration", type=positive, help="Automatically stop after this many recording seconds")
@@ -325,7 +309,6 @@ def main(argv=None):
                      help="Seconds to wait for capture readiness (default: 120; 600 for --engine fluid)")
     rec.add_argument("--no-refine", action="store_true", help="Keep transcription entirely local")
     rec.add_argument("--output", type=Path, default=Path("meetings"))
-    rec.add_argument("--model-cache", type=Path, default=Path(".cache/moonshine"))
     rec.add_argument("--model", default="claude-haiku-5-5", help="Claude model alias or ID (default: claude-haiku-5-5)")
     fmt = sub.add_parser("refine", help="Format or recover an existing meeting journal")
     fmt.add_argument("journal", type=Path)
