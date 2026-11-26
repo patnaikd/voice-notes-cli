@@ -1,0 +1,2 @@
+# Fluid engine CoreML models (several files exceed GitHub's 100 MB limit).
+models/fluid/** filter=lfs diff=lfs merge=lfs -text

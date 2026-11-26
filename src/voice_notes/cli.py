@@ -11,7 +11,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from .capture import helper_arguments, list_devices, parse_event, startup_timeout
+from .capture import fluid_models_dir, helper_arguments, list_devices, parse_event, startup_timeout
 from .native import build_helper
 from .meter import AudioMeter
 from .refine import refine
@@ -125,7 +125,8 @@ def record(args):
             command = [str(helper), *helper_arguments(
                 engine=args.engine, source=args.source, app=args.app, locale=args.locale, mic=args.mic,
                 speakers_dir=args.speakers_dir, speaker_threshold=args.speaker_threshold,
-                input_file=input_file, input_realtime=getattr(args, "input_realtime", False))]
+                input_file=input_file, input_realtime=getattr(args, "input_realtime", False),
+                models_dir=fluid_models_dir() if args.engine == "fluid" else None)]
             process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, start_new_session=True)
 
             def startup_expired():

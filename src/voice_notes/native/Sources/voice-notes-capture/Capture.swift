@@ -459,10 +459,14 @@ final class StopFlag {
             let sources = !inputFile.isEmpty ? [source == "system" ? "system" : "mic"]
                 : (source == "both" ? ["mic", "system"] : [source])
             if engine == "fluid" {
-                emit(["type": "status", "message": "Loading speech and speaker models (the first run downloads about 1 GB)…"])
+                let modelsPath = option("--models-dir", "")
+                let models = modelsPath.isEmpty ? nil : URL(fileURLWithPath: modelsPath, isDirectory: true)
+                emit(["type": "status", "message": models.map { "Loading speech and speaker models from \($0.path)…" }
+                      ?? "Loading speech and speaker models (the first run downloads about 1 GB)…"])
                 let threshold = Float(option("--speaker-threshold", "0.70")) ?? 0.70
                 let directory = URL(fileURLWithPath: option("--speakers-dir", ""))
-                let shared = try await FluidModels.load(speakersDirectory: directory, threshold: threshold)
+                let shared = try await FluidModels.load(speakersDirectory: directory, threshold: threshold,
+                                                        modelsDirectory: models)
                 for name in sources { fluidTracks[name] = try await FluidTrack.create(source: name, shared: shared) }
             }
             let capture = Capture(tracks: tracks, fluidTracks: fluidTracks, stop: continuation)

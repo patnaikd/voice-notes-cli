@@ -8,17 +8,28 @@ final class FluidModels {
     let store: SpeakerStore
     /// Cosine similarity at or above which a voice is the same speaker.
     let threshold: Float
+    /// Base folder holding `campplus/`, `parakeet-unified-en-0.6b/` and `sortformer/`
+    /// (for example the repository's `models/fluid`); nil uses FluidAudio's cache.
+    let modelsDirectory: URL?
 
-    init(embedder: CampPlusEmbedder, store: SpeakerStore, threshold: Float) {
+    init(embedder: CampPlusEmbedder, store: SpeakerStore, threshold: Float, modelsDirectory: URL?) {
         self.embedder = embedder
         self.store = store
         self.threshold = threshold
+        self.modelsDirectory = modelsDirectory
     }
 
-    static func load(speakersDirectory: URL, threshold: Float) async throws -> FluidModels {
+    static func load(speakersDirectory: URL, threshold: Float, modelsDirectory: URL?) async throws -> FluidModels {
         let store = try SpeakerStore(root: speakersDirectory)
-        let embedder = try await CampPlusEmbedder.load()
-        return FluidModels(embedder: embedder, store: store, threshold: threshold)
+        let embedder: CampPlusEmbedder
+        // CAM++ has no directory option for download, so load a local copy directly when present.
+        if let local = modelsDirectory?.appendingPathComponent("campplus", isDirectory: true),
+           CampPlusModels.modelsExist(at: local) {
+            embedder = CampPlusEmbedder(models: try CampPlusModels.load(from: local))
+        } else {
+            embedder = try await CampPlusEmbedder.load()
+        }
+        return FluidModels(embedder: embedder, store: store, threshold: threshold, modelsDirectory: modelsDirectory)
     }
 }
 
@@ -77,10 +88,12 @@ final class FluidTrack {
 
     static func create(source: String, shared: FluidModels) async throws -> FluidTrack {
         let asr = StreamingUnifiedAsrManager()
-        try await asr.loadModels()
+        // Both loaders use files already in the directory and download only what is missing.
+        try await asr.loadModels(to: shared.modelsDirectory)
         let config = SortformerConfig.default
         let diarizer = SortformerDiarizer(config: config)
-        diarizer.initialize(models: try await SortformerModels.loadFromHuggingFace(config: config))
+        diarizer.initialize(models: try await SortformerModels.loadFromHuggingFace(
+            config: config, cacheDirectory: shared.modelsDirectory))
         let track = FluidTrack(source: source, shared: shared, asr: asr, diarizer: diarizer)
         track.worker = Task { await track.run() }
         return track

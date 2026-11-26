@@ -65,7 +65,7 @@ Install the macOS 26 SDK and check `xcode-select -p`. The first build downloads 
 - **Two people share one speaker:** raise `--speaker-threshold` (for example 0.75), and use headphones so the microphone does not re-capture remote voices.
 - **Everyone is "Unknown speaker":** that is expected until you name them. Run `voice-notes speakers list`, then `play` and `name`.
 - **A speaker is missing:** a voice needs about 2 seconds of continuous speech to be enrolled, and Sortformer separates at most four simultaneous speakers per track.
-- **First recording seems stuck:** models download on first use (about 1.1 GB). The startup deadline is 600 seconds for `--engine fluid`; raise it with `--startup-timeout`.
+- **First recording seems stuck:** without `models/fluid` from Git LFS (`git lfs pull`), models download on first use (about 1 GB). The startup deadline is 600 seconds for `--engine fluid`; raise it with `--startup-timeout`.
 - **Test without audio hardware:** `voice-notes record --engine fluid --input-file recording.wav --no-refine`.
 
 ## Reporting a problem

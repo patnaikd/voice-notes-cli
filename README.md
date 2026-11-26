@@ -13,7 +13,7 @@ Record microphone and system audio, transcribe locally, and turn the transcript 
 
 An **Apple Silicon Mac running macOS 26 or later**, Python **3.12+**, and Xcode or Command Line Tools with the **macOS 26 SDK**. Use `xcode-select --install` if Command Line Tools are missing. [uv](https://docs.astral.sh/uv/getting-started/installation/) manages Python dependencies.
 
-The first build fetches and compiles the pinned [FluidAudio](https://github.com/FluidInference/FluidAudio) Swift package, which needs network access and several minutes. First-time speech recognition can download language assets. Moonshine downloads its own models, and `--engine fluid` downloads about 1.1 GB of CoreML models on first use. Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
+The first build fetches and compiles the pinned [FluidAudio](https://github.com/FluidInference/FluidAudio) Swift package, which needs network access and several minutes. First-time speech recognition can download language assets. Moonshine downloads its own models. The `--engine fluid` CoreML models (about 850 MB) are stored in this repository with Git LFS under `models/fluid`; install [Git LFS](https://git-lfs.com/) and run `git lfs pull` after cloning, or the helper downloads them from Hugging Face on first use instead (see [models/README.md](models/README.md)). Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
 
 ## Quick start
 

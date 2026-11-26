@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from ..capture import helper_arguments, list_devices
+from ..capture import fluid_models_dir, helper_arguments, list_devices
 from ..native import build_helper
 from ..speakers import SpeakerRegistry, rerender_transcripts
 from .health import Health
@@ -112,7 +112,8 @@ class Server:
     async def helper_command(self, settings: dict) -> list[str]:
         base = await self.helper_base()
         return base + helper_arguments(engine=settings["engine"], source=settings["source"], mic=settings["mic"],
-                                       speakers_dir=self.registry.root)
+                                       speakers_dir=self.registry.root,
+                                       models_dir=fluid_models_dir() if settings["engine"] == "fluid" else None)
 
     async def helper_base(self) -> list[str]:
         if self.config.helper_command:
