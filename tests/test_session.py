@@ -12,15 +12,15 @@ def segment(source="system", id="1", start=2, text="Ship on Friday.", **extra):
 
 def test_revisions_replace_labels_and_tracks_have_independent_ids(tmp_path):
     events = [segment(), segment(source="mic", start=1, text="Agreed."),
-              segment(speakers=[{"speaker_id": 8}])]
+              segment(speaker_uuid="3f2a91c4-0000-4000-8000-000000000000")]
     journal = tmp_path / "events.jsonl"
     journal.write_text("\n".join(json.dumps(event) for event in events) + "\n")
     result = read_segments(journal)
     assert len(result) == 2
     assert result[0]["source"] == "mic"
-    assert result[1]["speakers"] == [{"speaker_id": 8}]
+    assert result[1]["speaker_uuid"].startswith("3f2a91c4")
     text = render_transcript(result, "Planning")
-    assert "speaker 8" in text
+    assert "Unknown speaker 3f2a91c4" in text
     assert text.count("Ship on Friday.") == 1
 
 

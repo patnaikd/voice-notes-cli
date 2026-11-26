@@ -30,9 +30,9 @@ For speaker audio, play an audible source and use the default `--app all`. If th
 
 ## Transcript location and repeated text
 
-`Meeting files:` prints the recording directory. `events.jsonl` stores finalized speech during capture; `transcript.md` is rendered when capture stops or when you run `refine`. In plain mode, lines prefixed with `…` are tentative revisions requested by `--partials`; omit that flag for quieter output. The dashboard replaces tentative speech in place. Partial text is not committed to the transcript.
+`Meeting files:` prints the recording directory. `events.jsonl` stores finalized speech during capture; `transcript.md` is rendered when capture stops or when you run `refine`. Lines prefixed with `…` are tentative revisions requested by `--partials`; omit that flag for quieter output. Partial text is not committed to the transcript.
 
-If your terminal has trouble with full-screen redraws or mouse input, use `--ui plain`. Piped output and `TERM=dumb` automatically use plain mode. In the dashboard, Q waits for safe saving; Activity keeps errors visible until you exit.
+For the web interface (`voice-notes serve`), check the Health tab and `meetings/logs/server.log` (or `~/Library/Logs/voice-notes/` when installed as a service). If `/` says the interface has not been built, run `npm --prefix web ci && npm --prefix web run build`.
 
 ## Claude authentication and formatting
 
@@ -65,7 +65,7 @@ Install the macOS 26 SDK and check `xcode-select -p`. The first build downloads 
 - **Two people share one speaker:** raise `--speaker-threshold` (for example 0.75), and use headphones so the microphone does not re-capture remote voices.
 - **Everyone is "Unknown speaker":** that is expected until you name them. Run `voice-notes speakers list`, then `play` and `name`.
 - **A speaker is missing:** a voice needs about 2 seconds of continuous speech to be enrolled, and Sortformer separates at most four simultaneous speakers per track.
-- **First recording seems stuck:** models download on first use (about 1.1 GB). The startup deadline is 600 seconds for `--engine fluid`; raise it with `--startup-timeout`.
+- **First recording seems stuck:** without `models/fluid` from Git LFS (`git lfs pull`), models download on first use (about 1 GB). The startup deadline is 600 seconds for `--engine fluid`; raise it with `--startup-timeout`.
 - **Test without audio hardware:** `voice-notes record --engine fluid --input-file recording.wav --no-refine`.
 
 ## Reporting a problem

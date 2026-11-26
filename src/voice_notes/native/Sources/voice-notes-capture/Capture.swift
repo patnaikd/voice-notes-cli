@@ -143,7 +143,7 @@ final class AppleTrack {
     static func create(source: String, locale: Locale) async throws -> AppleTrack {
         guard SpeechTranscriber.isAvailable,
               let supported = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
-            throw Failure(message: "Apple SpeechTranscriber is unavailable for \(locale.identifier); try --engine moonshine")
+            throw Failure(message: "Apple SpeechTranscriber is unavailable for \(locale.identifier); try another --locale")
         }
         let transcriber = SpeechTranscriber(locale: supported,
             transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
@@ -249,10 +249,6 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
                 fluid.add(Array(UnsafeBufferPointer(start: samples, count: Int(pcm.frameLength))), at: seconds)
             } else if let track = tracks[source] {
                 try track.add(buffer, at: seconds)
-            } else {
-                let data = Data(bytes: samples, count: Int(pcm.frameLength) * MemoryLayout<Float>.size)
-                emit(["type": "audio", "source": source, "start": seconds,
-                      "sample_rate": 16000, "pcm": data.base64EncodedString()])
             }
         } catch {
             emit(["type": "error", "message": "Audio conversion: \(error.localizedDescription)"])
@@ -436,6 +432,9 @@ final class StopFlag {
             }
             let source = option("--source", "both")
             let engine = option("--engine", "apple")
+            guard engine == "apple" || engine == "fluid" else {
+                throw Failure(message: "Unknown --engine \(engine); use apple or fluid")
+            }
             let (stops, continuation) = AsyncStream<Void>.makeStream()
             let stopFlag = StopFlag()
             signal(SIGINT, SIG_IGN)
@@ -459,10 +458,14 @@ final class StopFlag {
             let sources = !inputFile.isEmpty ? [source == "system" ? "system" : "mic"]
                 : (source == "both" ? ["mic", "system"] : [source])
             if engine == "fluid" {
-                emit(["type": "status", "message": "Loading speech and speaker models (the first run downloads about 1 GB)…"])
+                let modelsPath = option("--models-dir", "")
+                let models = modelsPath.isEmpty ? nil : URL(fileURLWithPath: modelsPath, isDirectory: true)
+                emit(["type": "status", "message": models.map { "Loading speech and speaker models from \($0.path)…" }
+                      ?? "Loading speech and speaker models (the first run downloads about 1 GB)…"])
                 let threshold = Float(option("--speaker-threshold", "0.70")) ?? 0.70
                 let directory = URL(fileURLWithPath: option("--speakers-dir", ""))
-                let shared = try await FluidModels.load(speakersDirectory: directory, threshold: threshold)
+                let shared = try await FluidModels.load(speakersDirectory: directory, threshold: threshold,
+                                                        modelsDirectory: models)
                 for name in sources { fluidTracks[name] = try await FluidTrack.create(source: name, shared: shared) }
             }
             let capture = Capture(tracks: tracks, fluidTracks: fluidTracks, stop: continuation)

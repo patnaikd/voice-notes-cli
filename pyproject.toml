@@ -10,13 +10,14 @@ description = "Local macOS meeting transcription with Claude Haiku meeting notes
 requires-python = ">=3.12"
 dependencies = [
     "claude-agent-sdk==0.2.165",
+    "fastapi>=0.115",
+    "psutil>=6.0",
     "python-dotenv>=1.2.4",
-    "textual>=8.2.8",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
-moonshine = ["moonshine-voice==0.1.5"]
-dev = ["pytest>=8"]
+dev = ["httpx>=0.27", "pytest>=8"]
 
 [project.urls]
 Repository = "https://github.com/patnaikd/voice-notes-cli"
@@ -27,6 +28,9 @@ voice-notes = "_voice_notes_launcher:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voice_notes"]
+
+# The built frontend may be git-ignored; ship it whenever it exists.
+artifacts = ["src/voice_notes/web/static/**"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "packaging/_voice_notes_launcher.py" = "_voice_notes_launcher.py"

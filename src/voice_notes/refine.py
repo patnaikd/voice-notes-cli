@@ -48,6 +48,19 @@ def chunks(text: str, limit: int = 24000) -> list[str]:
 REQUEST_TIMEOUT = 180
 
 
+def claude_environment() -> dict:
+    """The environment for Claude processes. Claude reads its login from the macOS keychain, which needs USER;
+    launchd and other minimal environments may not set it."""
+    environment = os.environ.copy()
+    if not environment.get("USER") or not environment.get("LOGNAME"):
+        import pwd
+        name = pwd.getpwuid(os.getuid()).pw_name
+        environment.setdefault("USER", name)
+        environment.setdefault("LOGNAME", name)
+        environment.setdefault("HOME", str(Path.home()))
+    return environment
+
+
 def ensure_authentication():
     credentials = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     providers = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
@@ -63,7 +76,7 @@ def ensure_authentication():
                 executable = str(bundled)
     if executable:
         try:
-            status = subprocess.run([executable, "auth", "status", "--json"],
+            status = subprocess.run([executable, "auth", "status", "--json"], env=claude_environment(),
                                     capture_output=True, text=True, timeout=10)
             if json.loads(status.stdout).get("loggedIn"):
                 return
@@ -77,11 +90,13 @@ def ensure_authentication():
                        "Your transcript is preserved.")
 
 
-async def ask_haiku(text: str, model: str) -> str:
-    ensure_authentication()
+async def ask_haiku(text: str, model: str, system: str | None = None) -> str:
+    """One isolated request; `system` replaces the notes prompt and sends `text` unwrapped."""
+    # `claude auth status` takes about a second; never block the caller's event loop with it.
+    await asyncio.to_thread(ensure_authentication)
     # The worker isolates blocking SDK imports as well as Claude startup.
     # The parent can time out and kill both Python and its Claude subprocess.
-    environment = os.environ.copy()
+    environment = claude_environment()
     source_root = str(Path(__file__).resolve().parent.parent)
     environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
     process = await asyncio.create_subprocess_exec(
@@ -90,7 +105,7 @@ async def ask_haiku(text: str, model: str) -> str:
         stderr=asyncio.subprocess.PIPE, env=environment, start_new_session=True,
     )
     try:
-        request = json.dumps({"text": text, "model": model}).encode()
+        request = json.dumps({"text": text, "model": model, **({"system": system} if system else {})}).encode()
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(request), REQUEST_TIMEOUT)
         except TimeoutError as error:
@@ -119,19 +134,19 @@ async def ask_haiku(text: str, model: str) -> str:
                 await asyncio.wait_for(process.wait(), 3)
 
 
-async def _sdk_ask(text: str, model: str) -> str:
+async def _sdk_ask(text: str, model: str, system: str | None = None) -> str:
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
     # Empty working directory and explicit tools=[] avoid exposing project files.
     with tempfile.TemporaryDirectory(prefix="voice-notes-refine-") as directory:
         options = ClaudeAgentOptions(
-            model=model, system_prompt=SYSTEM_PROMPT, tools=[],
+            model=model, system_prompt=system or SYSTEM_PROMPT, tools=[],
             allowed_tools=[], permission_mode="dontAsk", max_turns=1,
             setting_sources=[], strict_mcp_config=True, cwd=directory,
         )
         result = None
         async for message in query(
-            prompt="Format the following meeting transcript data:\n" + text,
+            prompt=text if system else "Format the following meeting transcript data:\n" + text,
             options=options,
         ):
             if isinstance(message, ResultMessage):
