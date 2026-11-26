@@ -188,7 +188,7 @@ class JobQueue:
             job["error"] = "Discarded: the meeting changed while notes were generated"
             return
         await asyncio.to_thread(atomic_write, directory / "notes.md", notes)
-        server.update_meeting(current, notes_status="done", notes_error=None)
+        server.update_meeting(current, notes_status="done", notes_error=None, notes_stale=False)
 
     # Continuation
 

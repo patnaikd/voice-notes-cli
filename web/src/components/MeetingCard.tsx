@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { fmtRange, fmtTime } from "../lib/format";
 import { useDispatch } from "../state/store";
 import type { Meeting, NotesStatus, Segment } from "../types";
+import { DeleteMeetingButton } from "./DeleteMeetingButton";
 
 type SegOrId = Segment | string;
 
@@ -102,12 +103,16 @@ export const MeetingCard = memo(
             </div>
           </div>
           <span
-            className={`notes-pill notes-${meeting.notes_status}`}
+            className={`notes-pill notes-${meeting.notes_status}${meeting.notes_stale ? " notes-stale" : ""}`}
             data-testid="notes-status"
             data-status={meeting.notes_status}
-            title={meeting.notes_error ?? undefined}
+            title={
+              meeting.notes_stale
+                ? "Transcript lines were deleted after these notes were written; regenerate to update them"
+                : (meeting.notes_error ?? undefined)
+            }
           >
-            {NOTES_LABEL[meeting.notes_status] ?? meeting.notes_status}
+            {meeting.notes_stale ? "Notes outdated" : (NOTES_LABEL[meeting.notes_status] ?? meeting.notes_status)}
           </span>
         </div>
         <div className="chips">
@@ -149,6 +154,11 @@ export const MeetingCard = memo(
             >
               {busy === "split" ? "Splitting…" : "Split"}
             </button>
+          )}
+          {!placeholder && (
+            <span className="card-actions-end">
+              <DeleteMeetingButton meeting={meeting} disabled={isLive || busy !== null} />
+            </span>
           )}
         </div>
       </article>

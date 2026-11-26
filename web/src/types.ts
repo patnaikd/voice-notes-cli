@@ -32,6 +32,8 @@ export interface Meeting {
   ended_at: string | null;
   notes_status: NotesStatus;
   notes_error: string | null;
+  /** Transcript lines were deleted after these notes were written. */
+  notes_stale?: boolean;
   merged_by: null | "user" | "auto";
   auto_merge_reason: string | null;
 }
@@ -173,6 +175,7 @@ export type ServerMessage =
   | { type: "segment"; segment: Segment }
   | { type: "meeting"; meeting: Meeting }
   | { type: "meeting_removed"; id: string }
+  | { type: "segment_removed"; id: string }
   | { type: "speakers"; speakers: Speaker[] }
   | { type: "job"; job: Job }
   | { type: "health"; health: Health }

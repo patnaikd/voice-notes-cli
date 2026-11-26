@@ -300,6 +300,94 @@ def test_legacy_import_merge_split_rename_and_discard(serve, tmp_path):
     assert [m["id"] for m in page["meetings"]] == [parts[1]["id"]]
 
 
+def test_delete_lines_marks_notes_stale_and_regenerate_clears_it(serve, tmp_path):
+    root = tmp_path / "meetings"
+    write_segment(root, "2026-11-24_10-00-00", ["Keep this line.", "Remove this noise.", "Keep this too."])
+    (root / "2026-11-24_10-00-00" / "notes.md").write_text("# Old notes\n")
+    server, client = serve()
+    meeting = client.get("/api/snapshot").json()["meetings"][0]
+    assert meeting["notes_status"] == "done" and not meeting.get("notes_stale")
+    segment_id = meeting["segment_ids"][0]
+    target = {"segment_id": segment_id, "source": "mic", "id": "r1-u1"}
+    url = f"/api/meetings/{meeting['id']}/lines/delete"
+    assert client.post(url, json={"lines": []}).status_code == 400
+    assert client.post(url, json={"lines": [dict(target, id="r1-u9")]}).status_code == 404
+    assert client.post(url, json={"lines": [dict(target, segment_id="2026-11-24_11-00-00")]}).status_code == 400
+    result = client.post(url, json={"lines": [target]}).json()
+    assert result["meeting"]["notes_stale"] is True and result["segments"][0]["line_count"] == 2
+    lines = client.get(f"/api/segments/{segment_id}").json()["lines"]
+    assert [line["text"] for line in lines] == ["Keep this line.", "Keep this too."]
+    transcript = (root / segment_id / "transcript.md").read_text()
+    assert "Remove this noise." not in transcript and "Keep this too." in transcript
+    assert "Remove this noise." not in client.get(f"/api/meetings/{meeting['id']}").json()["transcript_md"]
+    # The journal stays append-only: the deletion is an event, not a rewrite.
+    assert '"type": "delete"' in (root / segment_id / "events.jsonl").read_text()
+    client.post(f"/api/meetings/{meeting['id']}/refine")
+    wait_for(lambda: server.store.meetings[meeting["id"]]["notes_stale"] is False
+             and server.store.meetings[meeting["id"]]["notes_status"] == "done", message="regenerated notes")
+    assert "Remove this noise." not in (root / segment_id / "notes.md").read_text()
+
+
+def test_delete_meeting_moves_folders_to_trash(serve, tmp_path):
+    root = tmp_path / "meetings"
+    write_segment(root, "2026-11-24_10-00-00", ["First part."])
+    write_segment(root, "2026-11-24_11-00-00", ["Second part."])
+    server, client = serve()
+    a, b = sorted(client.get("/api/snapshot").json()["meetings"], key=lambda m: m["started_at"])
+    merged = client.post("/api/meetings/merge", json={"meeting_ids": [a["id"], b["id"]]}).json()
+    wait_for(lambda: server.store.meetings[merged["id"]]["notes_status"] == "done", message="merged notes")
+    assert client.delete("/api/meetings/nope").status_code == 404
+    with client.websocket_connect("/ws") as socket:
+        assert socket.receive_json()["type"] == "snapshot"
+        result = client.delete(f"/api/meetings/{merged['id']}").json()
+        seen = set()
+        while {"segment_removed", "meeting_removed"} - seen:
+            seen.add(socket.receive_json()["type"])
+    trash = Path(result["trash"])
+    assert sorted(p.name for p in trash.iterdir()) == ["2026-11-24_10-00-00", "2026-11-24_11-00-00", "merged"]
+    assert not (root / "2026-11-24_10-00-00").exists() and not (root / "merged" / merged["id"]).exists()
+    assert server.store.meetings == {} and server.store.segments == {}
+    snapshot = client.get("/api/snapshot").json()
+    assert snapshot["meetings"] == [] and snapshot["segments"] == []
+    # Trash is not re-imported on the next start.
+    server2, client2 = serve()
+    assert client2.get("/api/snapshot").json()["meetings"] == []
+
+
+def test_cannot_delete_while_recording(serve):
+    server, client = serve()
+    client.post("/api/recording/start", json={"engine": "apple"})
+    wait_for(lambda: server.recorder.state == "recording", message="recording")
+    meeting_id = server.store.segments[server.recorder.payload()["segment_id"]]["meeting_id"]
+    assert client.delete(f"/api/meetings/{meeting_id}").status_code == 409
+    assert client.post(f"/api/meetings/{meeting_id}/lines/delete", json={"lines": [
+        {"segment_id": server.recorder.payload()["segment_id"], "source": "mic", "id": "x"}]}).status_code == 409
+    client.post("/api/recording/stop")
+
+
+def test_export_day_collects_notes_in_order(serve, tmp_path):
+    root = tmp_path / "meetings"
+    write_segment(root, "2026-11-24_14-00-00", ["Afternoon review."])
+    write_segment(root, "2026-11-24_09-00-00", ["Morning standup."])
+    write_segment(root, "2026-11-25_09-00-00", ["Next day."])
+    (root / "2026-11-24_09-00-00" / "notes.md").write_text(
+        "# Meeting\n\n## Summary\nStandup went well.\n\n```\n# not a heading\n```\n")
+    server, client = serve()
+    assert client.get("/api/export/day/2026-11-23").status_code == 404
+    assert client.get("/api/export/day/24-11-2026").status_code == 400
+    response = client.get("/api/export/day/2026-11-24")
+    assert response.status_code == 200 and response.headers["content-type"].startswith("text/markdown")
+    assert 'filename="voice-notes-2026-11-24.md"' in response.headers["content-disposition"]
+    text = response.text
+    assert text.startswith("# Meeting notes: Tuesday, November 24, 2026\n")
+    assert "2 meetings" in text and "Next day" not in text
+    assert text.index("## Meeting 09:00") < text.index("## Meeting 14:00")
+    assert "\n### Summary\nStandup went well." in text and "#### Summary" not in text
+    assert "\n# Meeting\n" not in text
+    assert "```\n# not a heading\n```" in text  # code blocks are left alone
+    assert "*No notes yet.*" in text  # the 14:00 meeting has none
+
+
 def test_websocket_snapshot_and_upserts(serve, tmp_path):
     write_segment(tmp_path / "meetings", "2026-11-24_10-00-00", ["Hello there."])
     server, client = serve()
@@ -358,9 +446,9 @@ def test_speaker_endpoints(serve, tmp_path):
     (folder / "speaker.json").write_text(json.dumps({"name": None, "created_at": "2026-11-25T09:00:00+00:00"}))
     (folder / "sample.wav").write_bytes(b"RIFF....WAVE")
     server, client = serve()
-    assert client.get("/api/speakers").json()[0]["display_name"] == "Unknown speaker 3f2a91c4"
+    assert client.get("/api/speakers").json()[0]["display_name"] == "3f2a91c4"
     server.recorder.live.append({"segment_id": "s", "id": "r1-u1", "source": "system", "start": 0, "end": 1,
-                                 "wall": "", "text": "Hi", "speaker": "Unknown speaker 3f2a91c4",
+                                 "wall": "", "text": "Hi", "speaker": "3f2a91c4",
                                  "speaker_uuid": identifier})
     with client.websocket_connect("/ws") as socket:
         assert socket.receive_json()["type"] == "snapshot"

@@ -50,6 +50,9 @@ def read_segments(path: Path) -> list[dict]:
             if event.get("type") == "segment":
                 validate_segment(event)
                 latest[(event["source"], event["id"])] = event
+            elif event.get("type") == "delete":
+                # The user removed a line; the journal is append-only, so deletions are events too.
+                latest.pop((event.get("source"), event.get("id")), None)
     return sorted(latest.values(), key=lambda s: (s["start"], s["source"], s["id"]))
 
 
@@ -59,7 +62,7 @@ def speaker_label(segment: dict, registry=None) -> str:
     if identifier:
         if registry is not None:
             return registry.display_name(identifier)
-        return f"Unknown speaker {identifier[:8].lower()}"
+        return identifier[:8].lower()
     return "Microphone" if segment["source"] == "mic" else "Remote audio"
 
 

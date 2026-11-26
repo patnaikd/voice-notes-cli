@@ -20,7 +20,7 @@ def test_revisions_replace_labels_and_tracks_have_independent_ids(tmp_path):
     assert result[0]["source"] == "mic"
     assert result[1]["speaker_uuid"].startswith("3f2a91c4")
     text = render_transcript(result, "Planning")
-    assert "Unknown speaker 3f2a91c4" in text
+    assert "**3f2a91c4:**" in text
     assert text.count("Ship on Friday.") == 1
 
 
@@ -65,3 +65,11 @@ def test_non_object_journal_event_is_rejected(tmp_path):
     journal.write_text('[]\n')
     with pytest.raises(ValueError, match="JSON objects"):
         read_segments(journal)
+
+
+def test_delete_events_remove_lines(tmp_path):
+    journal = tmp_path / "events.jsonl"
+    events = [segment(id="1", text="Keep."), segment(id="2", start=3, text="Drop."),
+              {"type": "delete", "source": "system", "id": "2"}]
+    journal.write_text("\n".join(json.dumps(event) for event in events) + "\n")
+    assert [s["text"] for s in read_segments(journal)] == ["Keep."]

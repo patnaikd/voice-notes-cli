@@ -11,10 +11,11 @@ import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from ..capture import fluid_models_dir, helper_arguments, list_devices
 from ..native import build_helper
@@ -242,6 +243,22 @@ class Server:
                 self.enqueue_notes(meeting)
         return meetings
 
+    def delete_meeting(self, meeting_id: str) -> Path:
+        meeting = self.store.meetings[meeting_id]
+        if any(self.store.segments[i]["status"] in OPEN for i in meeting["segment_ids"]):
+            raise RuntimeError("Stop recording before deleting this meeting")
+        busy = {meeting_id, *meeting["segment_ids"]}
+        if any(job["status"] == "running" and job["target"] in busy for job in self.jobs.jobs):
+            raise RuntimeError("Notes are being generated for this meeting; try again when they finish")
+        segment_ids, trash = self.store.delete_meeting(meeting_id)
+        self.store.save_index()
+        # Meeting first: an open detail view then stops refetching before its segments vanish.
+        self.hub.broadcast("meeting_removed", id=meeting_id)
+        for segment_id in segment_ids:
+            self.hub.broadcast("segment_removed", id=segment_id)
+        self.activity("info", f"Deleted “{meeting['title']}” (moved to {trash.relative_to(self.store.root)})")
+        return trash
+
     # Views
 
     def speakers_payload(self) -> list[dict]:
@@ -407,6 +424,56 @@ def create_app(server: Server) -> FastAPI:
             return server.split_meeting(meeting_id)
         except ValueError as error:
             raise HTTPException(400, str(error))
+
+    @app.delete("/api/meetings/{meeting_id}")
+    async def delete_meeting(meeting_id: str):
+        meeting_or_404(meeting_id)
+        try:
+            trash = await asyncio.to_thread(server.delete_meeting, meeting_id)
+        except RuntimeError as error:
+            raise HTTPException(409, str(error))
+        return {"deleted": meeting_id, "trash": str(trash)}
+
+    @app.post("/api/meetings/{meeting_id}/lines/delete")
+    async def delete_lines(meeting_id: str, request: Request):
+        meeting = meeting_or_404(meeting_id)
+        lines = (await json_body(request)).get("lines")
+        if (not isinstance(lines, list) or not lines or len(lines) > 1000
+                or not all(isinstance(l, dict) and all(isinstance(l.get(k), str) for k in ("segment_id", "source", "id"))
+                           for l in lines)):
+            raise HTTPException(400, "lines must list {segment_id, source, id} objects")
+        by_segment: dict[str, list[tuple[str, str]]] = {}
+        for line in lines:
+            if line["segment_id"] not in meeting["segment_ids"]:
+                raise HTTPException(400, f"Segment {line['segment_id']} is not part of this meeting")
+            by_segment.setdefault(line["segment_id"], []).append((line["source"], line["id"]))
+        segments = [store.segments[i] for i in by_segment]
+        if any(s["status"] in OPEN for s in segments):
+            raise HTTPException(409, "Lines can be deleted once the segment has finished recording")
+        for segment in segments:
+            try:
+                await asyncio.to_thread(store.delete_lines, segment, by_segment[segment["id"]], meeting["title"],
+                                        server.registry)
+            except KeyError as error:
+                raise HTTPException(404, error.args[0])
+        store.refresh_meeting(meeting)
+        for segment in segments:
+            server.hub.broadcast("segment", segment=segment)
+        # Existing notes no longer match the transcript; the user regenerates them when ready.
+        server.update_meeting(meeting, notes_stale=meeting["notes_status"] in ("done", "failed"))
+        return {"meeting": meeting, "segments": [store.segments[i] for i in meeting["segment_ids"]]}
+
+    @app.get("/api/export/day/{day}")
+    async def export_day(day: str):
+        try:
+            parsed = date.fromisoformat(day)
+        except ValueError:
+            raise HTTPException(400, "day must be YYYY-MM-DD")
+        markdown = await asyncio.to_thread(store.export_day, parsed)
+        if markdown is None:
+            raise HTTPException(404, f"No meetings on {day}")
+        return Response(markdown, media_type="text/markdown; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="voice-notes-{day}.md"'})
 
     @app.post("/api/meetings/{meeting_id}/refine")
     async def refine_meeting(meeting_id: str):

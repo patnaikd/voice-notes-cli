@@ -83,6 +83,13 @@ describe("reducer", () => {
     expect(reducer(s, { type: "meeting_removed", id: "missing" })).toBe(s);
   });
 
+  it("removes a segment on segment_removed", () => {
+    let s = withSnapshot({ segments: [seg("s1"), seg("s2")] });
+    s = reducer(s, { type: "segment_removed", id: "s1" });
+    expect(Object.keys(s.segments)).toEqual(["s2"]);
+    expect(reducer(s, { type: "segment_removed", id: "missing" })).toBe(s);
+  });
+
   it("tracks partials and clears them on a finalized line", () => {
     let s = withSnapshot();
     s = reducer(s, { type: "partial", source: "system", text: "hel", speaker: null });

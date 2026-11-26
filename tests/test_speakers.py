@@ -38,10 +38,10 @@ def meeting(root, name, events, title="Weekly planning"):
 def test_unnamed_speakers_are_unknown_until_named(tmp_path):
     add_speaker(tmp_path, ALICE)
     registry = SpeakerRegistry(tmp_path)
-    assert registry.display_name(ALICE) == "Unknown speaker 0f8fad5b"
+    assert registry.display_name(ALICE) == "0f8fad5b"
     registry.set_name(ALICE, "  Alice \n Smith ")
     assert registry.display_name(ALICE) == "Alice Smith"
-    assert registry.display_name(BOB) == "Unknown speaker 7c9e6679"
+    assert registry.display_name(BOB) == "7c9e6679"
 
 
 @pytest.mark.parametrize("name", ["", "   ", "x" * 101])
@@ -84,7 +84,7 @@ def test_forget_deletes_voice_data_but_old_transcripts_still_render(tmp_path):
     registry = SpeakerRegistry(tmp_path / "speakers")
     registry.forget(ALICE)
     assert not (tmp_path / "speakers" / ALICE).exists()
-    assert "Unknown speaker 0f8fad5b" in render_transcript([segment(ALICE)], "Title", registry)
+    assert "**0f8fad5b:**" in render_transcript([segment(ALICE)], "Title", registry)
 
 
 def test_renaming_rerenders_only_meetings_that_mention_the_speaker(tmp_path):

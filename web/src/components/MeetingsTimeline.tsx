@@ -87,8 +87,21 @@ export function MeetingsTimeline({ onOpen }: { onOpen: (id: string) => void }) {
           groups.map((g) => (
             <section key={g.key} className="day">
               <h3 className="day-head">
-                {g.label}
-                <span className="muted small"> · {g.meetings.length} {g.meetings.length === 1 ? "meeting" : "meetings"}</span>
+                <span>
+                  {g.label}
+                  <span className="muted small"> · {g.meetings.length} {g.meetings.length === 1 ? "meeting" : "meetings"}</span>
+                </span>
+                {g.key !== "unknown" && (
+                  <a
+                    className="btn btn-ghost btn-sm day-export"
+                    href={api.exportDayUrl(g.key)}
+                    download={`voice-notes-${g.key}.md`}
+                    data-testid="export-day"
+                    title="Download this day's meeting notes as Markdown"
+                  >
+                    Export notes
+                  </a>
+                )}
               </h3>
               <div className="cards">
                 {g.meetings.map((m) => (
