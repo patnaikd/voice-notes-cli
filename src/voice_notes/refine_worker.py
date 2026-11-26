@@ -9,7 +9,7 @@ from .refine import _sdk_ask
 def main():
     try:
         request = json.load(sys.stdin)
-        notes = asyncio.run(_sdk_ask(request["text"], request["model"]))
+        notes = asyncio.run(_sdk_ask(request["text"], request["model"], request.get("system")))
         print(json.dumps({"notes": notes}), flush=True)
         return 0
     except Exception as error:

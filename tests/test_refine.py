@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 import pytest
 
@@ -144,3 +145,20 @@ def test_modified_checkpoint_is_regenerated(tmp_path, monkeypatch):
     (tmp_path / "notes-part-001.md").write_text("Incomplete or changed")
     asyncio.run(refine.refine("Original", "model", tmp_path))
     assert len(calls) == 2
+
+
+def test_auth_check_finds_bundled_claude_with_minimal_environment(tmp_path, monkeypatch):
+    # Under launchd PATH has no `claude` and USER may be unset; the SDK's bundled CLI must still be found,
+    # and it must get USER so it can read the login from the keychain.
+    package = tmp_path / "claude_agent_sdk"
+    (package / "_bundled").mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    cli = package / "_bundled" / "claude"
+    cli.write_text('#!/bin/sh\nif [ -n "$USER" ]; then echo \'{"loggedIn": true}\'; else echo \'{"loggedIn": false}\'; fi\n')
+    cli.chmod(0o755)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "claude_agent_sdk", raising=False)
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "USER", "LOGNAME"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    refine.ensure_authentication()  # does not raise

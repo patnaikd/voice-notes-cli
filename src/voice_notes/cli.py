@@ -11,59 +11,28 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from .capture import helper_arguments, list_devices, parse_event, startup_timeout
 from .native import build_helper
 from .meter import AudioMeter
 from .refine import refine
-from .session import atomic_write, read_segments, render_transcript, timestamp, validate_segment
+from .session import atomic_write, read_segments, render_transcript, timestamp
 from .speakers import DEFAULT_DIR, SpeakerRegistry, rerender_transcripts, short_id
 
 
-def format_notes(journal: Path, title: str, model: str, *, observer=None, control=None, registry=None) -> Path:
+def format_notes(journal: Path, title: str, model: str, *, registry=None) -> Path:
     segments = read_segments(journal)
     transcript = render_transcript(segments, title, registry)
     atomic_write(journal.parent / "transcript.md", transcript)
     if not any(s["text"].strip() for s in segments):
         raise RuntimeError("No finalized speech was captured; raw events are preserved")
-    if observer:
-        observer({"type": "phase", "phase": "formatting", "model": model})
-    else:
-        print(f"Formatting with {model}…", file=sys.stderr)
-
-    async def generate():
-        loop, task = asyncio.get_running_loop(), asyncio.current_task()
-        if control:
-            def cancel():
-                # A UI request can race the loop's final cleanup.
-                if not loop.is_closed():
-                    try:
-                        loop.call_soon_threadsafe(task.cancel)
-                    except RuntimeError:
-                        pass
-            control.set_cancel(cancel)
-        try:
-            if observer:
-                return await refine(transcript, model, journal.parent, progress=observer)
-            return await refine(transcript, model, journal.parent)
-        except asyncio.CancelledError as error:
-            raise RuntimeError("Formatting canceled. Transcript and completed checkpoints are preserved.") from error
-        finally:
-            if control:
-                control.set_cancel(None)
-
-    notes = asyncio.run(generate())
+    print(f"Formatting with {model}…", file=sys.stderr)
+    notes = asyncio.run(refine(transcript, model, journal.parent))
     path = journal.parent / "notes.md"
     atomic_write(path, notes)
-    if observer:
-        observer({"type": "notes_saved", "path": str(path.resolve()), "text": notes})
     return path
 
 
-def record(args, *, observer=None, control=None):
-    def emit(event):
-        if observer:
-            observer(event)
-
-    emit({"type": "phase", "phase": "starting"})
+def record(args):
     if args.speakers and args.engine != "moonshine":
         raise ValueError("--speakers requires --engine moonshine; --engine fluid always identifies speakers")
     input_file = getattr(args, "input_file", None)
@@ -75,11 +44,7 @@ def record(args, *, observer=None, control=None):
         if not Path(input_file).is_file():
             raise ValueError(f"Audio file not found: {input_file}")
     registry = SpeakerRegistry(getattr(args, "speakers_dir", None))
-    if control and control.stop_requested.is_set():
-        raise RuntimeError("Recording canceled before capture started.")
     helper = build_helper(args.build_dir)
-    if control and control.stop_requested.is_set():
-        raise RuntimeError("Recording canceled before capture started.")
     stamp = datetime.now().astimezone().strftime("%Y-%m-%d_%H-%M-%S")
     directory = args.output / stamp
     # Refuse to overwrite another meeting started in the same second.
@@ -93,18 +58,14 @@ def record(args, *, observer=None, control=None):
         **({"speakers_dir": str(Path(args.speakers_dir).resolve())} if args.engine == "fluid" else {}),
         **({"input_file": str(Path(input_file).resolve())} if input_file else {}),
     }, indent=2) + "\n")
-    emit({"type": "session", "directory": str(directory.resolve())})
-    if not observer:
-        print(f"Meeting files: {directory.resolve()}", file=sys.stderr)
+    print(f"Meeting files: {directory.resolve()}", file=sys.stderr)
     failures = []
     sources = ["mic", "system"] if args.source == "both" else [args.source]
-    meter = AudioMeter(sources, remote_label="Speaker",
-                       enabled=not args.no_meter and observer is None)
+    meter = AudioMeter(sources, remote_label="Speaker", enabled=not args.no_meter)
     with journal_path.open("a", buffering=1) as journal:
         def receive(event):
             if event["type"] == "level":
                 meter.update(event["source"], event["rms"], event["peak"])
-                emit(event)
                 return
             if event["type"] == "audio":
                 recognizer.audio(event)
@@ -113,11 +74,8 @@ def record(args, *, observer=None, control=None):
                 journal.write(json.dumps(event) + "\n")
                 journal.flush()
                 os.fsync(journal.fileno())
-            emit(event)
             if event["type"] == "error":
                 failures.append(event["message"])
-            if observer:
-                return
             if event["type"] == "segment":
                 meter.print(f"[{timestamp(event['start'])}] {event['source']}: {event['text']}", stream=sys.stdout)
             elif event["type"] == "partial" and args.partials:
@@ -131,8 +89,7 @@ def record(args, *, observer=None, control=None):
 
         recognizer = None
         process = None
-        # The fluid engine loads about 1 GB of models, and downloads them on first use.
-        startup_timeout = args.startup_timeout or (600 if args.engine == "fluid" else 120)
+        deadline = args.startup_timeout or startup_timeout(args.engine)
         timer = None
         startup_timer = None
         ready = threading.Event()
@@ -144,7 +101,6 @@ def record(args, *, observer=None, control=None):
             if stop_requested:
                 return
             stop_requested = True
-            emit({"type": "phase", "phase": "finalizing"})
             if process and process.poll() is None:
                 process.send_signal(signal.SIGTERM)
                 # Give native recognizers time to finalize, then force exit.
@@ -160,54 +116,35 @@ def record(args, *, observer=None, control=None):
         try:
             if args.engine == "moonshine":
                 from .moonshine import Moonshine
-                if observer:
-                    emit({"type": "status", "message": "Loading Moonshine models (first use downloads assets)…"})
-                else:
-                    print("Loading Moonshine models (first use downloads assets)…", file=sys.stderr)
-                recognizer = Moonshine(["mic", "system"] if args.source == "both" else [args.source],
-                                      args.locale.split("-")[0].split("_")[0], args.speakers,
-                                      args.model_cache, receive)
-            if control and control.stop_requested.is_set():
-                raise RuntimeError("Recording canceled before capture started.")
+                print("Loading Moonshine models (first use downloads assets)…", file=sys.stderr)
+                recognizer = Moonshine(sources, args.locale.split("-")[0].split("_")[0], args.speakers,
+                                       args.model_cache, receive)
             if threading.current_thread() is threading.main_thread():
                 for number in (signal.SIGINT, signal.SIGTERM):
                     old_signals[number] = signal.signal(number, stop)
-            command = [str(helper), "--engine", args.engine, "--source", args.source,
-                       "--app", args.app, "--locale", args.locale, "--mic", args.mic or ""]
-            if args.engine == "fluid":
-                command += ["--speakers-dir", str(Path(args.speakers_dir).resolve()),
-                            "--speaker-threshold", str(args.speaker_threshold)]
-                if input_file:
-                    command += ["--input-file", str(Path(input_file).resolve())]
-                    if getattr(args, "input_realtime", False):
-                        command.append("--input-realtime")
+            command = [str(helper), *helper_arguments(
+                engine=args.engine, source=args.source, app=args.app, locale=args.locale, mic=args.mic,
+                speakers_dir=args.speakers_dir, speaker_threshold=args.speaker_threshold,
+                input_file=input_file, input_realtime=getattr(args, "input_realtime", False))]
             process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, start_new_session=True)
-            if control:
-                control.set_stop(stop)
+
             def startup_expired():
                 if not ready.is_set() and process.poll() is None:
-                    message = (f"Capture did not become ready within {startup_timeout:g} seconds. "
+                    message = (f"Capture did not become ready within {deadline:g} seconds. "
                                "Check macOS permissions and speech asset downloads; "
                                "increase --startup-timeout for first-time setup.")
                     failures.append(message)
-                    if observer:
-                        emit({"type": "error", "message": message})
-                    else:
-                        meter.print(message)
+                    meter.print(message)
                     stop()
 
-            startup_timer = threading.Timer(startup_timeout, startup_expired)
+            startup_timer = threading.Timer(deadline, startup_expired)
             startup_timer.daemon = True
             startup_timer.start()
             duration_timer = None
             try:
                 for line in process.stdout:
                     try:
-                        event = json.loads(line)
-                        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
-                            raise ValueError("expected a JSON event object")
-                        if event["type"] == "segment":
-                            validate_segment(event)
+                        event = parse_event(line)
                     except ValueError as error:
                         failures.append(f"Invalid capture event: {error}. Saved speech was preserved.")
                         stop()
@@ -239,8 +176,6 @@ def record(args, *, observer=None, control=None):
                 timer.cancel()
             if startup_timer:
                 startup_timer.cancel()
-            if control:
-                control.set_stop(None)
             for number, handler in old_signals.items():
                 signal.signal(number, handler)
             try:
@@ -249,19 +184,14 @@ def record(args, *, observer=None, control=None):
             finally:
                 atomic_write(directory / "transcript.md",
                              render_transcript(read_segments(journal_path), args.title, registry))
-                emit({"type": "transcript_saved", "path": str((directory / "transcript.md").resolve())})
-    if not observer:
-        print(f"Transcript saved: {directory / 'transcript.md'}", file=sys.stderr)
+    print(f"Transcript saved: {directory / 'transcript.md'}", file=sys.stderr)
     if failures:
         has_speech = any(segment["text"].strip() for segment in read_segments(journal_path))
         recovery = (f". Recover captured speech with: voice-notes refine '{journal_path}'"
                     if has_speech else ". No speech was captured; start a new recording after resolving the error.")
         raise RuntimeError("; ".join(failures) + recovery)
-    if not args.no_refine and not (control and control.skip_formatting.is_set()):
-        path = format_notes(journal_path, args.title, args.model, observer=observer, control=control,
-                            registry=registry)
-        if not observer:
-            print(path)
+    if not args.no_refine:
+        print(format_notes(journal_path, args.title, args.model, registry=registry))
 
 
 def doctor(args):
@@ -349,19 +279,18 @@ def positive(value):
     return number
 
 
+def env_float(name):
+    value = os.environ.get(name)
+    return float(value) if value else None
+
+
 def devices(args):
-    result = subprocess.run([str(build_helper(args.build_dir)), "--devices"],
-                            capture_output=True, text=True, timeout=15)
-    if result.returncode:
-        raise RuntimeError(result.stderr or result.stdout)
-    payload = json.loads(result.stdout)
-    for heading, channels, default in [("Microphones", "input_channels", "default_input"),
-                                        ("Output devices", "output_channels", "default_output")]:
+    payload = list_devices([str(build_helper(args.build_dir))])
+    for heading, key in [("Microphones", "microphones"), ("Output devices", "outputs")]:
         print(heading + ":")
-        for device in payload["devices"]:
-            if device[channels] > 0:
-                mark = " [system default]" if device[default] else ""
-                print(f"  {device['name']}{mark}\n    UID: {device['uid']}")
+        for device in payload[key]:
+            mark = " [system default]" if device["default"] else ""
+            print(f"  {device['name']}{mark}\n    UID: {device['uid']}")
     print('\nSelect an input with: voice-notes record --mic "Microphone name or UID"')
 
 
@@ -375,7 +304,6 @@ def main(argv=None):
     sub.add_parser("build", help="Compile the native capture helper")
     sub.add_parser("devices", help="List microphones and output devices, including system defaults")
     rec = sub.add_parser("record", help="Start recording; stop and format with Ctrl-C")
-    rec.add_argument("--ui", choices=["auto", "textual", "plain"], default="auto", help="Terminal interface (default: auto; Textual in an interactive terminal)")
     rec.add_argument("--engine", choices=["apple", "moonshine", "fluid"], default="apple",
                      help="apple: Apple SpeechAnalyzer; moonshine: Moonshine; "
                           "fluid: FluidAudio streaming recognition with named speaker identification (English)")
@@ -422,16 +350,36 @@ def main(argv=None):
     merge = actions.add_parser("merge", help="Merge a duplicate speaker into another")
     merge.add_argument("source", help="Speaker to remove")
     merge.add_argument("target", help="Speaker to keep")
+    web = sub.add_parser("serve", help="Run the browser interface (all-day recording, segments, async notes)")
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--port", type=int, default=8765)
+    web.add_argument("--data-dir", type=Path, default=Path("meetings"))
+    web.add_argument("--open", action="store_true", help="Open the interface in the default browser")
+    web.add_argument("--allow-remote", action="store_true",
+                     help="Allow a non-loopback --host (there is no authentication)")
+    hidden = argparse.SUPPRESS
+    web.add_argument("--segment-seconds", type=positive, default=env_float("VOICE_NOTES_SEGMENT_SECONDS"), help=hidden)
+    web.add_argument("--grace-seconds", type=float, default=env_float("VOICE_NOTES_GRACE_SECONDS"), help=hidden)
+    web.add_argument("--stall-seconds", type=positive, default=env_float("VOICE_NOTES_STALL_SECONDS"), help=hidden)
+    web.add_argument("--helper-command", default=os.environ.get("VOICE_NOTES_HELPER_COMMAND") or None, help=hidden)
+    web.add_argument("--fake-llm", action="store_true", default=os.environ.get("VOICE_NOTES_FAKE_LLM") == "1",
+                     help=hidden)
+    svc = sub.add_parser("service", help="Install, remove, or inspect the launchd agent that runs serve")
+    svc.add_argument("action", choices=["install", "uninstall", "status"])
+    svc.add_argument("--port", type=int, default=8765)
+    svc.add_argument("--data-dir", type=Path, default=Path("meetings"))
     args = parser.parse_args(argv)
     try:
         from dotenv import load_dotenv
         load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
         if args.command == "record":
-            interactive = sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
-            if args.ui == "textual" or (args.ui == "auto" and interactive):
-                from .tui import run_dashboard
-                return run_dashboard(args)
             record(args)
+        elif args.command == "serve":
+            from .web.app import serve
+            return serve(args)
+        elif args.command == "service":
+            from .web import service
+            return service.main(args)
         elif args.command == "doctor":
             doctor(args)
         elif args.command == "speakers":

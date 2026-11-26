@@ -2,16 +2,12 @@
 
 Record microphone and system audio, transcribe locally, and turn the transcript into Markdown notes with **Claude Agent SDK + `claude-haiku-5-5`**. Works with any meeting app or browser; no Zoom integration or audio routing driver is required.
 
-- Textual dashboard with colored meters, scrolling transcripts, notes preview, and keyboard controls.
+- Browser interface for all-day recording: live meters and transcript, 30-minute segments, automatic meeting grouping, and notes generated in the background.
 - Separate microphone and system tracks, with timestamps and live audio meters.
 - Apple SpeechAnalyzer by default; optional Moonshine recognition and anonymous speaker labels.
 - Local transcript journal that survives capture and formatting failures.
 - Named speaker identification in real time (`--engine fluid`): unknown voices are enrolled automatically; you listen to a saved sample, name them once, and every past transcript is corrected.
 - Optional Claude summaries, discussion, decisions, action items, and open questions.
-
-![Textual dashboard with synthetic meeting text](docs/images/dashboard.svg)
-
-*Dashboard preview uses synthetic meeting text.*
 
 ## Requirements
 
@@ -35,24 +31,34 @@ uv run voice-notes record --title "Weekly planning" --no-refine
 
 Grant **Microphone** and **Screen & System Audio Recording** permissions to the terminal/helper when prompted. After changing permissions, quit and reopen the launching terminal or app. Use headphones to reduce remote voices being captured again by the microphone.
 
-Interactive terminals open the **Textual dashboard** automatically. It shows the selected microphone, capture scope, elapsed time, colored audio meters, and Transcript / Notes / Activity tabs. Non-interactive terminals keep plain output.
-
-Speak and play meeting audio. In plain mode the meters look like:
+Speak and play meeting audio. The terminal meters look like:
 
 ```text
 Mic [#######.....]  -25 dB | Speaker [#########...]  -15 dB
 ```
 
-In the dashboard, press **Space** or click **Stop & save / Stop & format**. **Ctrl-C** stops recording; during formatting it cancels notes while preserving the transcript and completed checkpoints. **Q** safely exits, skipping or canceling formatting when necessary. **F** toggles transcript following, and **O** opens the session folder. The dashboard stays open after completion so you can read the notes or inspect errors.
+Press **Ctrl-C once** to stop capture and save `transcript.md`. Finalized text is journaled during recording; `transcript.md` is rendered when capture stops. Only finalized sentences are printed unless `--partials` is set.
 
-In plain mode, press **Ctrl-C once** to stop capture and save `transcript.md`. Finalized text is journaled during recording; `transcript.md` is rendered when capture stops. Plain mode prints only finalized sentences unless `--partials` is set. The dashboard always shows tentative speech in a compact updating area.
-
-Force either interface when needed:
+## Web interface (all-day recording)
 
 ```sh
-uv run voice-notes record --ui textual --title "Planning"
-uv run voice-notes record --ui plain --title "Planning"
+npm --prefix web ci && npm --prefix web run build   # once, and after frontend changes
+uv run voice-notes serve --open                     # http://localhost:8765/
 ```
+
+Click **Start** in the browser and leave it running. Recording is split into segments at every `:00` and `:30` (configurable); **Split now** cuts one early and **Stop** ends the current one. Each closed segment gets a transcript and, in the background, Claude notes. When a segment looks like a continuation of the previous meeting, Claude decides so and the segment is merged into that meeting automatically. You can merge meetings yourself, split a merged meeting back into its segments, rename meetings, regenerate notes, and name speakers (with sample playback). The Health tab shows memory, restarts, jobs, and errors.
+
+The server binds to `127.0.0.1` and has no authentication; `--allow-remote` is required for any other host. Files live under `--data-dir` (default `meetings/`): one folder per segment in the same format as `record`, `merged/<meeting>/` for merged notes, and `index.json`, `jobs.json`, `state.json`, `logs/server.log`. A crashed capture helper is restarted automatically, a hung one is killed, and after a server crash open segments are closed from their journals, pending notes jobs resume, and recording resumes if it was on.
+
+Run it at login with launchd (restarted automatically if it exits):
+
+```sh
+uv run voice-notes service install     # ~/Library/LaunchAgents/local.voice-notes.web.plist
+uv run voice-notes service status
+uv run voice-notes service uninstall
+```
+
+The first recording asks macOS for **Microphone** and **Screen & System Audio Recording** permission for the capture helper; grant both, then start recording again. Service logs are in `~/Library/Logs/voice-notes/`.
 
 ## Enable formatted notes
 
@@ -160,7 +166,7 @@ uv run voice-notes build
 uv build
 ```
 
-Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and headless Textual stop/save, cancellation, resizing, and error display. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. Speaker identification was verified on synthetic voices and file input only: a three-voice test attributed all ten turns correctly, and real-model integration tests enroll and re-recognize voices (`VOICE_NOTES_FLUID_TEST=1 uv run pytest tests/test_fluid.py`). It has not been tested live on a microphone or with real people, and no accuracy benchmark has been performed.
+Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and the web server (segment boundaries including DST, late-final routing, helper crash/stall restarts, crash recovery, auto-merge, merge/split, jobs, and the WebSocket) using a fake capture helper (`tests/fake_helper.py`) and a fake LLM. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. Speaker identification was verified on synthetic voices and file input only: a three-voice test attributed all ten turns correctly, and real-model integration tests enroll and re-recognize voices (`VOICE_NOTES_FLUID_TEST=1 uv run pytest tests/test_fluid.py`). It has not been tested live on a microphone or with real people, and no accuracy benchmark has been performed.
 
 - [Troubleshooting](docs/troubleshooting.md): permissions, silence, authentication, and stalled environments.
 - [Architecture](docs/architecture.md): capture, event protocol, persistence, and shutdown.
