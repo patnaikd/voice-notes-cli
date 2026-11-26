@@ -15,11 +15,12 @@ from .native import build_helper
 from .meter import AudioMeter
 from .refine import refine
 from .session import atomic_write, read_segments, render_transcript, timestamp, validate_segment
+from .speakers import DEFAULT_DIR, SpeakerRegistry, rerender_transcripts, short_id
 
 
-def format_notes(journal: Path, title: str, model: str, *, observer=None, control=None) -> Path:
+def format_notes(journal: Path, title: str, model: str, *, observer=None, control=None, registry=None) -> Path:
     segments = read_segments(journal)
-    transcript = render_transcript(segments, title)
+    transcript = render_transcript(segments, title, registry)
     atomic_write(journal.parent / "transcript.md", transcript)
     if not any(s["text"].strip() for s in segments):
         raise RuntimeError("No finalized speech was captured; raw events are preserved")
@@ -64,7 +65,16 @@ def record(args, *, observer=None, control=None):
 
     emit({"type": "phase", "phase": "starting"})
     if args.speakers and args.engine != "moonshine":
-        raise ValueError("--speakers requires --engine moonshine")
+        raise ValueError("--speakers requires --engine moonshine; --engine fluid always identifies speakers")
+    input_file = getattr(args, "input_file", None)
+    if args.engine == "fluid" and not args.locale.lower().startswith("en"):
+        raise ValueError("--engine fluid transcribes English only; use --engine apple or moonshine for other languages")
+    if input_file:
+        if args.engine != "fluid":
+            raise ValueError("--input-file requires --engine fluid")
+        if not Path(input_file).is_file():
+            raise ValueError(f"Audio file not found: {input_file}")
+    registry = SpeakerRegistry(getattr(args, "speakers_dir", None))
     if control and control.stop_requested.is_set():
         raise RuntimeError("Recording canceled before capture started.")
     helper = build_helper(args.build_dir)
@@ -80,6 +90,8 @@ def record(args, *, observer=None, control=None):
         "engine": args.engine, "source": args.source, "app": args.app,
         "speakers": args.speakers, "locale": args.locale, "model": args.model,
         "microphone": args.mic or "system default",
+        **({"speakers_dir": str(Path(args.speakers_dir).resolve())} if args.engine == "fluid" else {}),
+        **({"input_file": str(Path(input_file).resolve())} if input_file else {}),
     }, indent=2) + "\n")
     emit({"type": "session", "directory": str(directory.resolve())})
     if not observer:
@@ -119,6 +131,8 @@ def record(args, *, observer=None, control=None):
 
         recognizer = None
         process = None
+        # The fluid engine loads about 1 GB of models, and downloads them on first use.
+        startup_timeout = args.startup_timeout or (600 if args.engine == "fluid" else 120)
         timer = None
         startup_timer = None
         ready = threading.Event()
@@ -158,16 +172,21 @@ def record(args, *, observer=None, control=None):
             if threading.current_thread() is threading.main_thread():
                 for number in (signal.SIGINT, signal.SIGTERM):
                     old_signals[number] = signal.signal(number, stop)
-            process = subprocess.Popen([
-                str(helper), "--engine", args.engine, "--source", args.source,
-                "--app", args.app, "--locale", args.locale,
-                "--mic", args.mic or "",
-            ], stdout=subprocess.PIPE, text=True, start_new_session=True)
+            command = [str(helper), "--engine", args.engine, "--source", args.source,
+                       "--app", args.app, "--locale", args.locale, "--mic", args.mic or ""]
+            if args.engine == "fluid":
+                command += ["--speakers-dir", str(Path(args.speakers_dir).resolve()),
+                            "--speaker-threshold", str(args.speaker_threshold)]
+                if input_file:
+                    command += ["--input-file", str(Path(input_file).resolve())]
+                    if getattr(args, "input_realtime", False):
+                        command.append("--input-realtime")
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True, start_new_session=True)
             if control:
                 control.set_stop(stop)
             def startup_expired():
                 if not ready.is_set() and process.poll() is None:
-                    message = (f"Capture did not become ready within {args.startup_timeout:g} seconds. "
+                    message = (f"Capture did not become ready within {startup_timeout:g} seconds. "
                                "Check macOS permissions and speech asset downloads; "
                                "increase --startup-timeout for first-time setup.")
                     failures.append(message)
@@ -177,7 +196,7 @@ def record(args, *, observer=None, control=None):
                         meter.print(message)
                     stop()
 
-            startup_timer = threading.Timer(args.startup_timeout, startup_expired)
+            startup_timer = threading.Timer(startup_timeout, startup_expired)
             startup_timer.daemon = True
             startup_timer.start()
             duration_timer = None
@@ -228,7 +247,8 @@ def record(args, *, observer=None, control=None):
                 if recognizer:
                     recognizer.close()
             finally:
-                atomic_write(directory / "transcript.md", render_transcript(read_segments(journal_path), args.title))
+                atomic_write(directory / "transcript.md",
+                             render_transcript(read_segments(journal_path), args.title, registry))
                 emit({"type": "transcript_saved", "path": str((directory / "transcript.md").resolve())})
     if not observer:
         print(f"Transcript saved: {directory / 'transcript.md'}", file=sys.stderr)
@@ -238,7 +258,8 @@ def record(args, *, observer=None, control=None):
                     if has_speech else ". No speech was captured; start a new recording after resolving the error.")
         raise RuntimeError("; ".join(failures) + recovery)
     if not args.no_refine and not (control and control.skip_formatting.is_set()):
-        path = format_notes(journal_path, args.title, args.model, observer=observer, control=control)
+        path = format_notes(journal_path, args.title, args.model, observer=observer, control=control,
+                            registry=registry)
         if not observer:
             print(path)
 
@@ -250,6 +271,9 @@ def doctor(args):
             print(f"{package}: {importlib.metadata.version(package)}")
         except importlib.metadata.PackageNotFoundError:
             print(f"{package}: not installed")
+    enrolled = SpeakerRegistry(args.speakers_dir).list()
+    print(f"Speaker registry: {args.speakers_dir} ({len(enrolled)} enrolled, "
+          f"{sum(1 for speaker in enrolled if speaker['name']) } named)")
     print("ANTHROPIC_API_KEY: " + ("set" if os.environ.get("ANTHROPIC_API_KEY") else "not set; Claude Code login may be usable"))
     result = subprocess.run([str(build_helper(args.build_dir)), "--doctor"], capture_output=True, text=True, timeout=30)
     if result.returncode:
@@ -259,6 +283,62 @@ def doctor(args):
         if status.get("type") == "error":
             raise RuntimeError(status["message"])
         print(json.dumps(status, indent=2))
+
+
+def local_time(value) -> str:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return ""
+
+
+def manage_speakers(args):
+    registry = SpeakerRegistry(args.speakers_dir)
+
+    def corrected(identifiers):
+        updated = rerender_transcripts(args.meetings, registry, set(identifiers))
+        print(f"Corrected {len(updated)} transcript(s) in {args.meetings}. "
+              "Regenerate notes with: voice-notes refine <meeting>/events.jsonl" if updated else
+              f"No transcripts in {args.meetings} mention this speaker.")
+
+    if args.action == "list":
+        speakers = registry.list()
+        if not speakers:
+            print(f"No speakers enrolled yet in {registry.root}. Record with --engine fluid to enroll voices.")
+            return
+        print(f"{'ID':<9} {'Name':<24} {'Sample':>7}  First heard")
+        for speaker in speakers:
+            print(f"{short_id(speaker['id']):<9} {(speaker['name'] or '(unnamed)')[:24]:<24} "
+                  f"{speaker['sample_seconds']:>6.0f}s  {local_time(speaker['created_at'])}")
+        print(f"\nListen: voice-notes speakers play <ID>    Name: voice-notes speakers name <ID> \"Name\"")
+    elif args.action == "play":
+        identifier = registry.find(args.speaker)
+        sample = registry.sample_path(identifier)
+        if not sample.is_file():
+            raise RuntimeError(f"Speaker {short_id(identifier)} has no saved voice sample")
+        print(f"Playing {registry.display_name(identifier)} ({short_id(identifier)})…")
+        subprocess.run(["afplay", str(sample)], check=True)
+    elif args.action == "name":
+        identifier = registry.set_name(registry.find(args.speaker), args.name)
+        print(f"{short_id(identifier)} is now {registry.display_name(identifier)}.")
+        corrected([identifier])
+    elif args.action == "merge":
+        source, target = registry.find(args.source), registry.find(args.target)
+        registry.merge(source, target)
+        print(f"Merged {short_id(source)} into {short_id(target)} ({registry.display_name(target)}).")
+        corrected([target])
+    elif args.action == "forget":
+        identifier = registry.find(args.speaker)
+        label = f"{registry.display_name(identifier)} ({short_id(identifier)})"
+        if not args.yes:
+            if not sys.stdin.isatty():
+                raise RuntimeError("Refusing to delete voice data without --yes")
+            if input(f"Permanently delete the voice data for {label}? [y/N] ").strip().lower() != "y":
+                print("Nothing deleted.")
+                return
+        registry.forget(identifier)
+        print(f"Deleted {label}. Past transcripts will show this voice as an unknown speaker.")
+        corrected([identifier])
 
 
 def positive(value):
@@ -288,13 +368,21 @@ def devices(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Transcribe a macOS meeting locally and write Haiku notes.")
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
+    parser.add_argument("--speakers-dir", type=Path, default=DEFAULT_DIR,
+                        help=f"Speaker registry (default: {DEFAULT_DIR}; env VOICE_NOTES_SPEAKERS)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="Check native speech availability, dependencies, and permissions")
     sub.add_parser("build", help="Compile the native capture helper")
     sub.add_parser("devices", help="List microphones and output devices, including system defaults")
     rec = sub.add_parser("record", help="Start recording; stop and format with Ctrl-C")
     rec.add_argument("--ui", choices=["auto", "textual", "plain"], default="auto", help="Terminal interface (default: auto; Textual in an interactive terminal)")
-    rec.add_argument("--engine", choices=["apple", "moonshine"], default="apple")
+    rec.add_argument("--engine", choices=["apple", "moonshine", "fluid"], default="apple",
+                     help="apple: Apple SpeechAnalyzer; moonshine: Moonshine; "
+                          "fluid: FluidAudio streaming recognition with named speaker identification (English)")
+    rec.add_argument("--speaker-threshold", type=float, default=0.70,
+                     help="Voice similarity (0-1) needed to match a known speaker with --engine fluid (default: 0.70)")
+    rec.add_argument("--input-file", type=Path, help="Transcribe an audio file instead of recording (--engine fluid)")
+    rec.add_argument("--input-realtime", action="store_true", help="Feed --input-file at live speed to test latency")
     rec.add_argument("--source", choices=["both", "mic", "system"], default="both")
     rec.add_argument("--app", default="all", help="Capture all system audio (default), or filter by app bundle ID")
     rec.add_argument("--mic", help="Input device name or UID (default: macOS default input)")
@@ -304,7 +392,8 @@ def main(argv=None):
     rec.add_argument("--partials", action="store_true", help="Also print in-progress text")
     rec.add_argument("--no-meter", action="store_true", help="Hide live microphone and speaker audio meters")
     rec.add_argument("--duration", type=positive, help="Automatically stop after this many recording seconds")
-    rec.add_argument("--startup-timeout", type=positive, default=120, help="Seconds to wait for capture readiness (default: 120)")
+    rec.add_argument("--startup-timeout", type=positive, default=None,
+                     help="Seconds to wait for capture readiness (default: 120; 600 for --engine fluid)")
     rec.add_argument("--no-refine", action="store_true", help="Keep transcription entirely local")
     rec.add_argument("--output", type=Path, default=Path("meetings"))
     rec.add_argument("--model-cache", type=Path, default=Path(".cache/moonshine"))
@@ -313,6 +402,26 @@ def main(argv=None):
     fmt.add_argument("journal", type=Path)
     fmt.add_argument("--title")
     fmt.add_argument("--model", default="claude-haiku-5-5")
+    render = sub.add_parser("transcript", help="Re-render transcript.md from a journal using current speaker names")
+    render.add_argument("journal", type=Path)
+    render.add_argument("--title")
+    speakers = sub.add_parser("speakers", help="List, listen to, name, merge, or forget enrolled speakers")
+    speakers.add_argument("--meetings", type=Path, default=Path("meetings"),
+                          help="Meetings folder whose transcripts are corrected when a speaker changes (default: meetings)")
+    actions = speakers.add_subparsers(dest="action", required=True)
+    actions.add_parser("list", help="Show enrolled speakers")
+    for action, text in (("play", "Play a speaker's saved voice sample"),
+                         ("name", "Name a speaker and correct past transcripts"),
+                         ("forget", "Delete a speaker's voice data")):
+        item = actions.add_parser(action, help=text)
+        item.add_argument("speaker", help="UUID, unique UUID prefix (4+ characters), or name")
+        if action == "name":
+            item.add_argument("name")
+        if action == "forget":
+            item.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
+    merge = actions.add_parser("merge", help="Merge a duplicate speaker into another")
+    merge.add_argument("source", help="Speaker to remove")
+    merge.add_argument("target", help="Speaker to keep")
     args = parser.parse_args(argv)
     try:
         from dotenv import load_dotenv
@@ -325,6 +434,15 @@ def main(argv=None):
             record(args)
         elif args.command == "doctor":
             doctor(args)
+        elif args.command == "speakers":
+            manage_speakers(args)
+        elif args.command == "transcript":
+            registry = SpeakerRegistry(args.speakers_dir)
+            metadata = args.journal.parent / "meeting.json"
+            title = args.title or (json.loads(metadata.read_text()).get("title", "Meeting") if metadata.exists() else "Meeting")
+            path = args.journal.parent / "transcript.md"
+            atomic_write(path, render_transcript(read_segments(args.journal), title, registry))
+            print(path)
         elif args.command == "build":
             print(build_helper(args.build_dir))
         elif args.command == "devices":
@@ -332,7 +450,7 @@ def main(argv=None):
         elif args.command == "refine":
             metadata = args.journal.parent / "meeting.json"
             title = args.title or (json.loads(metadata.read_text()).get("title", "Meeting") if metadata.exists() else "Meeting")
-            print(format_notes(args.journal, title, args.model))
+            print(format_notes(args.journal, title, args.model, registry=SpeakerRegistry(args.speakers_dir)))
     except KeyboardInterrupt:
         print("voice-notes: Interrupted. Saved transcripts and formatting checkpoints are preserved.", file=sys.stderr)
         return 130

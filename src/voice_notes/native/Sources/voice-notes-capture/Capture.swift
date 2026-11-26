@@ -5,6 +5,7 @@ import Speech
 import CoreMedia
 import CoreAudio
 import AudioToolbox
+import FluidAudio
 
 struct AudioDeviceInfo {
     let id: AudioDeviceID
@@ -202,6 +203,7 @@ struct LevelReading {
 final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     let queue = DispatchQueue(label: "voice-notes.audio")
     let tracks: [String: AppleTrack]
+    let fluidTracks: [String: FluidTrack]
     let converters: [String: Converter]
     var origin: Double?
     var levels: [String: LevelReading] = [:]
@@ -211,8 +213,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
     var stream: SCStream?
     var microphoneSession: AVCaptureSession?
     let stop: AsyncStream<Void>.Continuation
-    init(tracks: [String: AppleTrack], stop: AsyncStream<Void>.Continuation) {
+    init(tracks: [String: AppleTrack], fluidTracks: [String: FluidTrack] = [:], stop: AsyncStream<Void>.Continuation) {
         self.tracks = tracks
+        self.fluidTracks = fluidTracks
         self.stop = stop
         let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
         self.converters = ["mic": Converter(target: format), "system": Converter(target: format)]
@@ -242,7 +245,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
                 reading = LevelReading(emittedAt: now)
             }
             levels[source] = reading
-            if let track = tracks[source] {
+            if let fluid = fluidTracks[source] {
+                fluid.add(Array(UnsafeBufferPointer(start: samples, count: Int(pcm.frameLength))), at: seconds)
+            } else if let track = tracks[source] {
                 try track.add(buffer, at: seconds)
             } else {
                 let data = Data(bytes: samples, count: Int(pcm.frameLength) * MemoryLayout<Float>.size)
@@ -366,7 +371,46 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
         }
         emit(["type": "capture_stats", "sources": statistics])
         for track in tracks.values { try await track.finish() }
+        for track in fluidTracks.values { await track.finish() }
     }
+
+    /// Feed an audio file through the same pipeline as live capture. Used to
+    /// transcribe a recording and to test without audio devices.
+    func runFile(_ url: URL, source: String, realtime: Bool, stopped: StopFlag) async throws {
+        requestedSources = [source]
+        let samples = try AudioConverter().resampleAudioFile(url)
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+        let step = 1600
+        var index = 0
+        let start = ContinuousClock.now
+        while index < samples.count, !stopped.isSet {
+            let count = min(step, samples.count - index)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count))!
+            buffer.frameLength = AVAudioFrameCount(count)
+            for offset in 0..<count { buffer.floatChannelData![0][offset] = samples[index + offset] }
+            // Any fixed origin works: the first buffer defines time zero.
+            await withCheckedContinuation { continuation in
+                queue.async {
+                    self.accept(buffer, source: source, time: 1000 + Double(index) / 16000)
+                    continuation.resume()
+                }
+            }
+            index += count
+            if realtime {
+                // Pace against the wall clock so sleep overshoot does not accumulate.
+                let due = start.advanced(by: .milliseconds(index * 1000 / 16000))
+                try await Task.sleep(until: due, clock: .continuous)
+            }
+        }
+    }
+}
+
+/// Set from signal handlers so file processing can stop early.
+final class StopFlag {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }
 
 @main struct Main {
@@ -393,11 +437,12 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
             let source = option("--source", "both")
             let engine = option("--engine", "apple")
             let (stops, continuation) = AsyncStream<Void>.makeStream()
+            let stopFlag = StopFlag()
             signal(SIGINT, SIG_IGN)
             signal(SIGTERM, SIG_IGN)
             let signals = [SIGINT, SIGTERM].map { number -> DispatchSourceSignal in
                 let signal = DispatchSource.makeSignalSource(signal: number, queue: .global())
-                signal.setEventHandler { continuation.yield(()) }
+                signal.setEventHandler { stopFlag.set(); continuation.yield(()) }
                 signal.resume()
                 return signal
             }
@@ -408,10 +453,29 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, AVCaptureAudioD
                     tracks[name] = try await AppleTrack.create(source: name, locale: locale)
                 }
             }
-            let capture = Capture(tracks: tracks, stop: continuation)
-            try await capture.start(source: source, bundle: option("--app", "all"), mic: option("--mic", ""))
-            emit(["type": "ready", "message": "Recording \(source) audio with \(engine). Press Ctrl-C to stop."])
-            for await _ in stops { break }
+            var fluidTracks: [String: FluidTrack] = [:]
+            let inputFile = option("--input-file", "")
+            // A file is a single track: the system track only when asked for.
+            let sources = !inputFile.isEmpty ? [source == "system" ? "system" : "mic"]
+                : (source == "both" ? ["mic", "system"] : [source])
+            if engine == "fluid" {
+                emit(["type": "status", "message": "Loading speech and speaker models (the first run downloads about 1 GB)…"])
+                let threshold = Float(option("--speaker-threshold", "0.70")) ?? 0.70
+                let directory = URL(fileURLWithPath: option("--speakers-dir", ""))
+                let shared = try await FluidModels.load(speakersDirectory: directory, threshold: threshold)
+                for name in sources { fluidTracks[name] = try await FluidTrack.create(source: name, shared: shared) }
+            }
+            let capture = Capture(tracks: tracks, fluidTracks: fluidTracks, stop: continuation)
+            if !inputFile.isEmpty {
+                guard engine == "fluid" else { throw Failure(message: "--input-file requires --engine fluid") }
+                emit(["type": "ready", "message": "Transcribing \(inputFile) with fluid."])
+                try await capture.runFile(URL(fileURLWithPath: inputFile), source: sources[0],
+                                          realtime: args.contains("--input-realtime"), stopped: stopFlag)
+            } else {
+                try await capture.start(source: source, bundle: option("--app", "all"), mic: option("--mic", ""))
+                emit(["type": "ready", "message": "Recording \(source) audio with \(engine). Press Ctrl-C to stop."])
+                for await _ in stops { break }
+            }
             try await capture.finish()
             emit(["type": "stopped"])
         } catch {

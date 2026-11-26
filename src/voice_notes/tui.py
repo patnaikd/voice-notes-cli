@@ -17,6 +17,7 @@ from textual.widgets import Button, Footer, Header, LoadingIndicator, Markdown, 
 from .control import SessionControl
 from .meter import level_db
 from .session import timestamp
+from .speakers import SpeakerRegistry
 
 
 class SessionEvent(Message):
@@ -130,6 +131,7 @@ class VoiceNotesApp(App[int]):
         self.final_count = 0
         self.segments = {}
         self.diagnostics = deque(maxlen=200)
+        self.registry = SpeakerRegistry(getattr(args, "speakers_dir", None))
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -191,7 +193,7 @@ class VoiceNotesApp(App[int]):
             self.action_stop()
 
     def _details(self):
-        engine = "Apple Speech" if self.args.engine == "apple" else "Moonshine"
+        engine = {"apple": "Apple Speech", "fluid": "FluidAudio · speaker ID"}.get(self.args.engine, "Moonshine")
         parts = [engine, f"Mic: {self.mic_name}" if self.args.source != "system" else "Mic off",
                  f"Speaker: {self.scope}" if self.args.source != "mic" else "Speaker off"]
         self.query_one("#details", Static).update("  •  ".join(parts))
@@ -285,13 +287,15 @@ class VoiceNotesApp(App[int]):
     def _write_segment(self, event):
         source = event["source"]
         label = "MIC" if source == "mic" else "SPEAKER"
+        if event.get("speaker_uuid"):
+            label = self.registry.display_name(event["speaker_uuid"])[:24]
         speaker_ids = sorted({str(span["speaker_id"]) for span in event.get("speakers", [])
                               if span.get("speaker_id") is not None and span["speaker_id"] >= 0})
         if speaker_ids:
             label += " " + ", ".join(speaker_ids)
         line = Text()
         line.append(f"{timestamp(event['start'])}  ", style="dim")
-        line.append(f"{label:<10} ", style="#54d6fa" if source == "mic" else "#bd98ff")
+        line.append(f"{label:<12} ", style="#54d6fa" if source == "mic" else "#bd98ff")
         line.append(event["text"].strip(), style="#dce6f4")
         self.query_one("#transcript", RichLog).write(line, scroll_end=self.follow)
 
