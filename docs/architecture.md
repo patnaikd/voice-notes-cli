@@ -25,8 +25,12 @@ flowchart TD
 | `cli.py` | Argument parsing, `.env` loading, UI selection, capture subprocess, startup deadline, signals, and session files |
 | `tui.py` | Textual dashboard, live meters, transcript revisions, notes preview, and keyboard controls |
 | `control.py` | Thread-safe cooperative stop/quit and formatting cancellation |
-| `native.py` | macOS/SDK checks, bounded compilation/signing, atomic helper replacement |
-| `native/Capture.swift` | Device selection, independent audio tracks, conversion, levels, and Apple recognition |
+| `native.py` | macOS/SDK checks, `swift build` with Info.plist embedding, signing, atomic helper replacement |
+| `native/Package.swift` | SwiftPM package pinning FluidAudio (exact version) |
+| `native/Sources/voice-notes-capture/Capture.swift` | Device selection, independent audio tracks, conversion, levels, Apple recognition, and file input |
+| `native/Sources/voice-notes-capture/FluidEngine.swift` | Per-track streaming recognition, diarization, and speaker matching for `--engine fluid` |
+| `native/Sources/voice-notes-capture/SpeakerRegistry.swift` | Speaker store: embeddings, UUIDs, 60 s samples, atomic writes |
+| `speakers.py` | Registry reads, naming, merging, deleting, and retroactive transcript re-rendering |
 | `moonshine.py` | Optional streaming recognizers, timestamp gaps, and speaker-label revisions |
 | `meter.py` | Terminal redraw thread and RMS/peak display |
 | `session.py` | Journal validation, latest-segment selection, Markdown rendering, atomic writes |
@@ -53,6 +57,28 @@ Each source retains a shared presentation-time origin. Apple conversion ensures 
 Finalized events are flushed and fsynced. Markdown and metadata writes use unique temporary files, fsync, and atomic replacement, protecting an existing file if replacement fails. Recovery tolerates one truncated final journal line and rejects corruption earlier in the journal.
 
 Ctrl-C asks capture to finalize. A 20-second grace timer kills a helper that will not stop. The startup deadline covers the interval before `ready`; `--duration` counts only active recording time. Finalized speech is rendered even after capture failures. Power loss or an uncatchable process termination can still require journal recovery.
+
+## Fluid engine and speaker identity
+
+```mermaid
+flowchart TD
+    T[16 kHz track] --> D[Sortformer streaming diarization]
+    T --> R[Parakeet streaming recognition]
+    R --> W[Words with timings]
+    D --> S[Speaker slot per word]
+    W --> S
+    S --> U[Runs of one speaker]
+    U --> E[CAM++ embedding]
+    E --> M{Match in registry?}
+    M -->|similarity at or above threshold| K[Known UUID]
+    M -->|no match, 2 s or more of speech| N[Enroll new UUID and sample]
+    K --> G[segment event with speaker_uuid]
+    N --> G
+```
+
+Each track owns its models and a worker task fed by an ordered queue; gaps are zero-filled so word times equal meeting time. Recognition emits sub-word tokens in batches that can end mid-word, so words are assembled only once the next word starts. The decoder stretches a word to the next word's start, so attribution and embeddings use at most 0.6 s per word. An utterance closes at a pause or sentence end once diarization has caught up with it, and is split wherever the diarizer's speaker slot changes. A run of at least 1.2 s is embedded and matched; shorter runs inherit the slot's last speaker. Matches of 0.75 or more refine the stored centroid. A run of 2 s or more that matches nothing enrolls a speaker, unless its similarity is within 0.10 of the threshold and the slot already has a speaker.
+
+The registry is one directory per UUID (`speaker.json`, `sample.wav`). Swift writes embeddings and samples and preserves any name already in `speaker.json`; Python writes names and merge tombstones. Journals store UUIDs only, so a rename or merge changes how every past transcript renders without touching the journals.
 
 ## Formatting
 

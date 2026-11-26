@@ -43,10 +43,24 @@ The app uses `claude_agent_sdk.query` with `ClaudeAgentOptions(model="claude-hai
 
 Formatting operates on saved finalized text after recording. The prompt asks for conservative editing and states that missing owners, deadlines, and decisions must not be invented. Long transcripts are split into bounded chunks, each output is checkpointed, and the final file retains each part. This avoids a single context overflow, but means decisions repeated across parts are not globally deduplicated. Text goes to Claude; raw audio does not. The CLI loads a local `.env` without overriding the shell and checks credentials before SDK startup. An API-key-authenticated request to `claude-haiku-5-5` and formatting of a saved transcript completed successfully. Formatting startup and requests are bounded by an isolated worker deadline; matching completed parts can be reused on retry.
 
+## FluidAudio and speaker identification
+
+The `fluid` engine uses [FluidAudio](https://github.com/FluidInference/FluidAudio) 0.18.4, pinned exactly because its CoreML model repositories and streaming APIs change between releases. A spike on an M5 Pro with a synthetic three-voice recording compared the options:
+
+| Piece | Result |
+| --- | --- |
+| Sortformer streaming diarization | All 10 turns attributed correctly, 15x real time, about 1 s delay, four speakers at most. It does not remember speakers between recordings. |
+| Parakeet EOU streaming recognition | Fast but made word errors and has no punctuation. |
+| Parakeet Unified streaming recognition | Near-perfect text with punctuation; about 2 s delay. Chosen. |
+| Legacy pyannote streaming diarizer | Found 0 speakers; the offline version found 2 of 3. Not used. |
+| CAM++ voice embeddings | Cosine 0.81-0.93 for the same voice and 0.36-0.56 for different voices across 12 clip pairs, so a threshold near 0.70 separates them. FluidAudio's own CLI default of 0.5 would have merged two of the three voices. Chosen. |
+
+Sortformer decides who is speaking now; embeddings give each voice a persistent identity. Sources: [FluidAudio diarization guide](https://github.com/FluidInference/FluidAudio), [Sortformer CoreML models](https://huggingface.co/FluidInference/diar-streaming-sortformer-coreml). The test voices are synthetic macOS voices, so real people, rooms, and microphones remain unvalidated.
+
 ## Validation and remaining work
 
 Validated on macOS 26: local microphone and system transcription, independent timestamps, the HyperX channel mapping fix, and authenticated Haiku formatting. Permission checks must be verified from a normal terminal: sandboxed diagnostics can misleadingly report unavailable assets or denied audio access.
 
-Still to measure: recognition accuracy, CPU/memory use, diarization accuracy, long-meeting performance, and capture through different meeting apps/devices. Speaker IDs remain anonymous. Native capture requires real-device checks beyond mocked CLI tests; CI does not record audio or make paid model requests.
+Still to measure: recognition accuracy, CPU/memory use, diarization accuracy, long-meeting performance, and capture through different meeting apps/devices. Apple and Moonshine speaker IDs remain anonymous; `--engine fluid` identifies named speakers but has only been tested on synthetic voices. Native capture requires real-device checks beyond mocked CLI tests; CI does not record audio or make paid model requests.
 
 Whisper/Core ML or whisper.cpp remains another local ASR option, but requires separately downloaded weights and has not been integrated. For older macOS, a legacy Speech backend or audio driver capture would need separate implementation rather than a claim that this macOS 26 helper works unchanged.

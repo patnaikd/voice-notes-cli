@@ -9,7 +9,7 @@ def test_discrete_microphone_channel_survives_mono_conversion(tmp_path):
     if platform.system() != "Darwin" or not shutil.which("xcrun"):
         import pytest
         pytest.skip("Requires the macOS Swift SDK")
-    capture = (Path(__file__).parents[1] / "src/voice_notes/native/Capture.swift").read_text()
+    capture = (Path(__file__).parents[1] / "src/voice_notes/native/Sources/voice-notes-capture/Capture.swift").read_text()
     converter = capture[capture.index("final class Converter {"):capture.index("final class AppleTrack {")]
     source = tmp_path / "ConversionCheck.swift"
     source.write_text('import AVFoundation\nimport AudioToolbox\nimport Foundation\n'

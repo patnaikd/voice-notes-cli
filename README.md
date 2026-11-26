@@ -6,6 +6,7 @@ Record microphone and system audio, transcribe locally, and turn the transcript 
 - Separate microphone and system tracks, with timestamps and live audio meters.
 - Apple SpeechAnalyzer by default; optional Moonshine recognition and anonymous speaker labels.
 - Local transcript journal that survives capture and formatting failures.
+- Named speaker identification in real time (`--engine fluid`): unknown voices are enrolled automatically; you listen to a saved sample, name them once, and every past transcript is corrected.
 - Optional Claude summaries, discussion, decisions, action items, and open questions.
 
 ![Textual dashboard with synthetic meeting text](docs/images/dashboard.svg)
@@ -16,7 +17,7 @@ Record microphone and system audio, transcribe locally, and turn the transcript 
 
 An **Apple Silicon Mac running macOS 26 or later**, Python **3.12+**, and Xcode or Command Line Tools with the **macOS 26 SDK**. Use `xcode-select --install` if Command Line Tools are missing. [uv](https://docs.astral.sh/uv/getting-started/installation/) manages Python dependencies.
 
-First-time speech recognition can download language assets. Moonshine downloads its own models. Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
+The first build fetches and compiles the pinned [FluidAudio](https://github.com/FluidInference/FluidAudio) Swift package, which needs network access and several minutes. First-time speech recognition can download language assets. Moonshine downloads its own models, and `--engine fluid` downloads about 1.1 GB of CoreML models on first use. Claude formatting requires working credentials and network access; transcription does not require Claude credentials.
 
 ## Quick start
 
@@ -90,6 +91,28 @@ The CLI microphone selection is independent of the meeting app's selection. Name
 
 All system audio includes other tabs, apps, and notifications. App filtering depends on macOS audio attribution. A browser filter captures every audible tab in that browser.
 
+## Named speakers (`--engine fluid`)
+
+```sh
+uv run voice-notes record --engine fluid --title "Weekly planning"
+```
+
+FluidAudio runs entirely on this Mac (CoreML, Neural Engine): Parakeet streaming recognition with punctuation, Sortformer streaming diarization, and CAM++ voice embeddings. Each track (microphone and system audio) gets its own recognizer and diarizer. English only. Text appears about 3 seconds after it is spoken, and a 53-second recording is processed in a few seconds.
+
+Every finalized sentence is matched against a **speaker registry** of voices heard before (default `~/.voice-notes/speakers`; override with `--speakers-dir` or `VOICE_NOTES_SPEAKERS`). A voice that matches nothing is enrolled at once as an unknown speaker with a UUID, and up to 60 seconds of its speech is saved as a sample. Transcripts show `Unknown speaker 3f2a91c4` until you name it:
+
+```sh
+uv run voice-notes speakers list
+uv run voice-notes speakers play 3f2a            # listen to the saved sample
+uv run voice-notes speakers name 3f2a "Priya"    # also corrects past transcripts
+uv run voice-notes speakers merge 9c01 3f2a      # one person enrolled twice
+uv run voice-notes speakers forget 9c01          # delete a voice
+```
+
+Journals (`events.jsonl`) store only UUIDs. Naming a speaker re-renders `transcript.md` in every meeting under `--meetings` (default `meetings/`); run `voice-notes refine` on a meeting afterwards to regenerate its Claude notes with the new names. `voice-notes transcript <events.jsonl>` re-renders one transcript without Claude.
+
+Matching uses cosine similarity of voice embeddings; `--speaker-threshold` (default 0.70) trades merging two people against splitting one. Short interjections inherit the speaker the diarizer last placed in the same slot, and Sortformer separates at most four simultaneous speakers per track. Test without a microphone by transcribing a recording: `voice-notes record --engine fluid --input-file meeting.wav` (add `--input-realtime` to feed it at live speed).
+
 ## Moonshine and speaker labels
 
 ```sh
@@ -106,8 +129,8 @@ Each recording creates a directory under `meetings/`:
 
 | File | Contents |
 | --- | --- |
-| `meeting.json` | Title, start time, selected engine, sources, and model |
-| `events.jsonl` | Durable finalized speech, speaker revisions, statuses, and capture statistics |
+| `meeting.json` | Title, start time, selected engine, sources, model, and speaker registry |
+| `events.jsonl` | Durable finalized speech, speaker UUIDs and revisions, statuses, and capture statistics |
 | `transcript.md` | Latest finalized text, ordered by audio timestamp |
 | `notes.md` | Completed Claude notes |
 | `notes-part-001.md` and `.json` | Formatting checkpoint and content fingerprints |
@@ -124,7 +147,7 @@ Completed parts are reused only when their text, model, formatting prompt, and s
 
 ## Privacy and limits
 
-Audio is streamed in memory and **is not saved**. Local transcription uses public macOS APIs or Moonshine. Default formatting sends **transcript text** to Anthropic; `--no-refine` skips that request. Claude gets no tools, project settings, or project working directory. A minimal ScreenCaptureKit screen stream is discarded immediately; screen images are not saved or analyzed.
+Audio is streamed in memory and **is not saved**, with one exception: `--engine fluid` keeps up to 60 seconds of each enrolled speaker's speech (`sample.wav`) plus a voice embedding in the speaker registry, so you can identify them later. These are biometric data about everyone you record; keep the registry private, ask participants, and delete voices with `voice-notes speakers forget`. Local transcription uses public macOS APIs, Moonshine, or FluidAudio. Default formatting sends **transcript text** to Anthropic; `--no-refine` skips that request. Claude gets no tools, project settings, or project working directory. A minimal ScreenCaptureKit screen stream is discarded immediately; screen images are not saved or analyzed.
 
 The app starts and stops manually. It has no automatic meeting detection, participant-name lookup, or acoustic echo cancellation. Transcription and summaries can be wrong; retain the raw transcript as the reference. Speak clearly and verify decisions, names, numbers, and action ownership before sharing notes.
 
@@ -137,7 +160,7 @@ uv run voice-notes build
 uv build
 ```
 
-Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and headless Textual stop/save, cancellation, resizing, and error display. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. No accuracy or speaker-identification benchmark has been performed.
+Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and headless Textual stop/save, cancellation, resizing, and error display. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. Speaker identification was verified on synthetic voices and file input only: a three-voice test attributed all ten turns correctly, and real-model integration tests enroll and re-recognize voices (`VOICE_NOTES_FLUID_TEST=1 uv run pytest tests/test_fluid.py`). It has not been tested live on a microphone or with real people, and no accuracy benchmark has been performed.
 
 - [Troubleshooting](docs/troubleshooting.md): permissions, silence, authentication, and stalled environments.
 - [Architecture](docs/architecture.md): capture, event protocol, persistence, and shutdown.
