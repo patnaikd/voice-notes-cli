@@ -6,6 +6,31 @@ import CoreMedia
 import CoreAudio
 import AudioToolbox
 import FluidAudio
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+/// Whether Apple Intelligence's on-device language model can be used, for `--doctor`.
+/// Reports "unsupported" when the SDK has no Foundation Models framework.
+func appleIntelligenceStatus() -> [String: String] {
+    #if canImport(FoundationModels)
+    if #available(macOS 26.0, *) {
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            return ["status": "available"]
+        case .unavailable(.deviceNotEligible):
+            return ["status": "unavailable", "reason": "deviceNotEligible"]
+        case .unavailable(.appleIntelligenceNotEnabled):
+            return ["status": "unavailable", "reason": "appleIntelligenceNotEnabled"]
+        case .unavailable(.modelNotReady):
+            return ["status": "unavailable", "reason": "modelNotReady"]
+        case .unavailable(let reason):
+            return ["status": "unavailable", "reason": String(describing: reason)]
+        }
+    }
+    #endif
+    return ["status": "unsupported"]
+}
 
 struct AudioDeviceInfo {
     let id: AudioDeviceID
@@ -427,7 +452,8 @@ final class StopFlag {
                       "installed_locales": await SpeechTranscriber.installedLocales.map(\.identifier),
                       "supported_locales": await SpeechTranscriber.supportedLocales.map(\.identifier),
                       "screen_permission": CGPreflightScreenCaptureAccess(),
-                      "microphone_permission": AVCaptureDevice.authorizationStatus(for: .audio).rawValue])
+                      "microphone_permission": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
+                      "apple_intelligence": appleIntelligenceStatus()])
                 return
             }
             let source = option("--source", "both")

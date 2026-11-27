@@ -181,6 +181,37 @@ def record(args):
         print(format_notes(journal_path, args.title, args.model, registry=registry))
 
 
+APPLE_INTELLIGENCE_FIXES = {
+    "deviceNotEligible": "not supported on this Mac (needs Apple silicon)",
+    "appleIntelligenceNotEnabled": "turned off. Turn on Apple Intelligence in System Settings > "
+                                   "Apple Intelligence & Siri",
+    "modelNotReady": "still downloading. Keep the Mac on power and Wi-Fi, then run doctor again later",
+}
+
+
+def apple_intelligence_unsupported() -> str | None:
+    """Why this computer cannot run Apple's on-device model at all, or None if it might."""
+    if platform.system() != "Darwin" or int((platform.mac_ver()[0] or "0").split(".")[0]) < 26:
+        return "not supported (needs macOS 26 or newer on Apple silicon)"
+    if platform.machine() != "arm64":
+        return "not supported on this Mac (needs Apple silicon)"
+    return None
+
+
+def apple_intelligence_line(status) -> str:
+    """Plain-language status of the on-device model that offline notes would use."""
+    unsupported = apple_intelligence_unsupported()
+    if unsupported:
+        return f"Apple Intelligence: {unsupported}"
+    status = status or {}
+    if status.get("status") == "available":
+        return "Apple Intelligence: on-device model ready"
+    if status.get("status") == "unavailable":
+        reason = status.get("reason") or "unknown reason"
+        return "Apple Intelligence: " + APPLE_INTELLIGENCE_FIXES.get(reason, f"unavailable ({reason})")
+    return "Apple Intelligence: not supported (the helper was built without the Foundation Models framework)"
+
+
 def doctor(args):
     print(f"macOS: {platform.mac_ver()[0] or 'not macOS'}; architecture: {platform.machine()}")
     try:
@@ -192,6 +223,9 @@ def doctor(args):
           f"{sum(1 for speaker in enrolled if speaker['name']) } named)")
     print("Claude CLI: " + (claude_cli() or "bundled with claude-agent-sdk"))
     print("ANTHROPIC_API_KEY: " + ("set" if os.environ.get("ANTHROPIC_API_KEY") else "not set; Claude Code login may be usable"))
+    if apple_intelligence_unsupported():
+        # Say so before the helper build, which fails on older macOS.
+        print(apple_intelligence_line(None))
     result = subprocess.run([str(build_helper(args.build_dir)), "--doctor"], capture_output=True, text=True, timeout=30)
     if result.returncode:
         raise RuntimeError(result.stderr or result.stdout)
@@ -199,6 +233,10 @@ def doctor(args):
         status = json.loads(line)
         if status.get("type") == "error":
             raise RuntimeError(status["message"])
+        if status.get("type") == "doctor":
+            intelligence = status.pop("apple_intelligence", None)
+            if not apple_intelligence_unsupported():
+                print(apple_intelligence_line(intelligence))
         print(json.dumps(status, indent=2))
 
 

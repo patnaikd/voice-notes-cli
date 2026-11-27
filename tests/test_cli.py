@@ -107,3 +107,59 @@ SCRIPT
                      "--startup-timeout", "0.5", "--no-refine"]) == 1
     assert "Final speech." in next((tmp_path / "meetings").glob("*/transcript.md")).read_text()
     assert "did not become ready" in capsys.readouterr().err
+
+
+def mac(monkeypatch, version="26.1", machine="arm64"):
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(cli.platform, "mac_ver", lambda: (version, ("", "", ""), machine))
+    monkeypatch.setattr(cli.platform, "machine", lambda: machine)
+
+
+@pytest.mark.parametrize("status, expected", [
+    (dict(status="available"), "on-device model ready"),
+    (dict(status="unavailable", reason="appleIntelligenceNotEnabled"),
+     "Turn on Apple Intelligence in System Settings > Apple Intelligence & Siri"),
+    (dict(status="unavailable", reason="modelNotReady"), "still downloading"),
+    (dict(status="unavailable", reason="deviceNotEligible"), "needs Apple silicon"),
+    (dict(status="unavailable", reason="somethingNew"), "unavailable (somethingNew)"),
+    (dict(status="unsupported"), "not supported"),
+    (None, "not supported"),
+])
+def test_apple_intelligence_reasons_have_plain_fixes(monkeypatch, status, expected):
+    mac(monkeypatch)
+    assert expected in cli.apple_intelligence_line(status)
+
+
+@pytest.mark.parametrize("system, version, machine", [
+    ("Linux", "", "x86_64"), ("Darwin", "15.5", "arm64"), ("Darwin", "26.1", "x86_64")])
+def test_apple_intelligence_not_supported_on_old_macos_or_intel(monkeypatch, system, version, machine):
+    mac(monkeypatch, version, machine)
+    monkeypatch.setattr(cli.platform, "system", lambda: system)
+    line = cli.apple_intelligence_line(dict(status="available"))
+    assert line.startswith("Apple Intelligence: not supported")
+
+
+def test_doctor_reports_apple_intelligence(tmp_path, monkeypatch, capsys):
+    mac(monkeypatch)
+    helper = tmp_path / "fake-capture"
+    event = dict(type="doctor", apple_available=True, microphone_permission=3,
+                 apple_intelligence=dict(status="unavailable", reason="appleIntelligenceNotEnabled"))
+    helper.write_text(f"#!/bin/sh\necho '{json.dumps(event)}'\n")
+    helper.chmod(0o755)
+    monkeypatch.setattr(cli, "build_helper", lambda _: helper)
+    assert cli.main(["--speakers-dir", str(tmp_path / "speakers"), "doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "Apple Intelligence: turned off. Turn on Apple Intelligence" in out
+    assert '"apple_intelligence"' not in out
+    assert '"microphone_permission": 3' in out
+
+
+def test_doctor_says_not_supported_before_helper_fails_on_old_macos(tmp_path, monkeypatch, capsys):
+    mac(monkeypatch, "15.5")
+
+    def old_macos(_):
+        raise RuntimeError("This helper requires macOS 26+.")
+
+    monkeypatch.setattr(cli, "build_helper", old_macos)
+    assert cli.main(["--speakers-dir", str(tmp_path / "speakers"), "doctor"]) == 1
+    assert "Apple Intelligence: not supported (needs macOS 26" in capsys.readouterr().out
