@@ -1,14 +1,17 @@
 """index.json / state.json / jobs.json persistence and the segment/meeting model."""
+import asyncio
+import functools
 import json
 import logging
 import os
 import re
 import secrets
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from ..session import atomic_write, read_segments, render_transcript, speaker_label
+from ..session import atomic_write, cached_names, read_segments, render_transcript, speaker_label
 
 log = logging.getLogger("voice_notes.web")
 SEGMENT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(-\d+)?$")
@@ -21,7 +24,9 @@ def iso(epoch: float | None = None) -> str:
     return datetime.fromtimestamp(time.time() if epoch is None else epoch).astimezone().isoformat(timespec="milliseconds")
 
 
+@functools.lru_cache(maxsize=65536)
 def epoch(value: str) -> float:
+    # Cached: sorting and neighbor lookups convert every segment's start time repeatedly.
     return datetime.fromisoformat(value).timestamp()
 
 
@@ -94,7 +99,14 @@ def read_json(path: Path, default):
 
 
 class Store:
+    FLUSH_DELAY = 1.0  # seconds
+
     def __init__(self, root: Path):
+        self._dirty: set[str] = set()
+        self._flush_handle: asyncio.TimerHandle | None = None
+        self._write_lock = threading.Lock()
+        self._sequence = 0
+        self._written: dict[str, int] = {}
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         index = read_json(self.root / "index.json", {})
@@ -109,19 +121,65 @@ class Store:
             self.settings = dict(DEFAULT_SETTINGS)
         self.jobs: list[dict] = read_json(self.root / "jobs.json", {}).get("jobs") or []
 
+    # index.json and jobs.json change many times a minute and grow with history. Inside the event loop,
+    # saves are coalesced into at most one write per FLUSH_DELAY, done on a writer thread; the journals stay
+    # the source of truth, and startup recovery rebuilds what a crash loses. Outside a loop they write now.
+
     def save_index(self):
-        atomic_write(self.root / "index.json",
-                     json.dumps({"version": 1, "segments": self.segments, "meetings": self.meetings}) + "\n")
+        self._save("index")
+
+    def save_jobs(self):
+        self._save("jobs")
+
+    def _save(self, name: str):
+        self._dirty.add(name)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.flush()
+            return
+        if self._flush_handle is None:
+            self._flush_handle = loop.call_later(self.FLUSH_DELAY, self._flush_later, loop)
+
+    def _flush_later(self, loop):
+        self._flush_handle = None
+        for name, content, sequence in self._serialize():
+            loop.run_in_executor(None, self._write, name, content, sequence)
+
+    def flush(self):
+        """Write pending index/jobs changes now (shutdown, or code running outside the event loop)."""
+        if self._flush_handle is not None:
+            self._flush_handle.cancel()
+            self._flush_handle = None
+        for name, content, sequence in self._serialize():
+            self._write(name, content, sequence)
+
+    def _serialize(self) -> list[tuple[str, str, int]]:
+        """Snapshot dirty files as text on the calling thread, which owns the in-memory model."""
+        output = []
+        for name in sorted(self._dirty):
+            if name == "index":
+                content = json.dumps({"version": 1, "segments": self.segments, "meetings": self.meetings})
+            else:
+                active = [job for job in self.jobs if job["status"] in ("queued", "running")]
+                finished = [job for job in self.jobs if job["status"] not in ("queued", "running")][-200:]
+                self.jobs[:] = sorted(active + finished, key=lambda job: job["created_at"])
+                content = json.dumps({"jobs": self.jobs})
+            self._sequence += 1
+            output.append((name, content + "\n", self._sequence))
+        self._dirty.clear()
+        return output
+
+    def _write(self, name: str, content: str, sequence: int):
+        with self._write_lock:  # never let an older snapshot replace a newer one
+            if sequence < self._written.get(name, 0):
+                return
+            atomic_write(self.root / f"{name}.json", content)
+            self._written[name] = sequence
 
     def save_state(self):
         atomic_write(self.root / "state.json", json.dumps(
             {"recording_desired": self.recording_desired, "settings": self.settings}, indent=2) + "\n")
-
-    def save_jobs(self):
-        active = [job for job in self.jobs if job["status"] in ("queued", "running")]
-        finished = [job for job in self.jobs if job["status"] not in ("queued", "running")][-200:]
-        self.jobs = sorted(active + finished, key=lambda job: job["created_at"])
-        atomic_write(self.root / "jobs.json", json.dumps({"jobs": self.jobs}) + "\n")
 
     # Paths
 
@@ -199,21 +257,24 @@ class Store:
             result.append(self.refresh_meeting(self.new_meeting(self.segments[segment_id])))
         return result
 
-    def delete_meeting(self, meeting_id: str) -> tuple[list[str], Path]:
-        """Move a meeting's folders to trash/ (recoverable by moving them back) and drop it from the index."""
-        meeting = self.meetings[meeting_id]
+    def trash_folders(self, meeting_id: str, segment_ids: list[str]) -> Path:
+        """Move a meeting's folders to trash/ (recoverable by moving them back). Files only, so it can run
+        on a worker thread; `forget_meeting` then drops the meeting from the index on the event loop."""
         trash = self.root / "trash" / f"{datetime.now():%Y-%m-%d_%H-%M-%S}_{meeting_id}"
         trash.mkdir(parents=True)
-        for segment_id in meeting["segment_ids"]:
+        for segment_id in segment_ids:
             folder = self.segment_dir(segment_id)
             if folder.exists():
                 os.replace(folder, trash / segment_id)
-            self.segments.pop(segment_id, None)
         merged = self.root / "merged" / meeting_id
         if merged.exists():
             os.replace(merged, trash / "merged")
-        del self.meetings[meeting_id]
-        return list(meeting["segment_ids"]), trash
+        return trash
+
+    def forget_meeting(self, meeting_id: str, segment_ids: list[str]) -> None:
+        for segment_id in segment_ids:
+            self.segments.pop(segment_id, None)
+        self.meetings.pop(meeting_id, None)
 
     def export_day(self, day) -> str | None:
         """Markdown with the notes of every meeting that started on `day` (a date), or None if there are none."""
@@ -247,8 +308,9 @@ class Store:
     def delete_lines(self, segment: dict, keys: list[tuple[str, str]], title: str, registry=None) -> None:
         """Append deletion events for (source, id) lines, then re-render the segment transcript."""
         journal = self.segment_dir(segment["id"]) / "events.jsonl"
-        present = {(event["source"], event["id"]) for event in read_segments(journal)} if journal.exists() else set()
-        missing = [line_id for _, line_id in keys if (_, line_id) not in present]
+        events = read_segments(journal) if journal.exists() else []
+        present = {(event["source"], event["id"]) for event in events}
+        missing = [line_id for source, line_id in keys if (source, line_id) not in present]
         if missing:
             raise KeyError(f"Line(s) not found in segment {segment['id']}: {', '.join(missing)}")
         with journal.open("a") as stream:
@@ -256,19 +318,23 @@ class Store:
                 stream.write(json.dumps({"type": "delete", "source": source, "id": line_id}) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
-        self.finish_segment(segment, title, registry)
+        # Apply the deletions in memory instead of parsing the journal a second time.
+        deleted = set(keys)
+        self.finish_segment(segment, title, registry,
+                            events=[event for event in events if (event["source"], event["id"]) not in deleted])
 
     def segment_lines(self, segment: dict, registry=None) -> list[dict]:
         journal = self.segment_dir(segment["id"]) / "events.jsonl"
         if not journal.exists():
             return []
-        start = epoch(segment["started_at"])
+        start, registry = epoch(segment["started_at"]), cached_names(registry)
         return [line_payload(segment["id"], event, start, registry) for event in read_segments(journal)
                 if event["text"].strip()]
 
     def meeting_transcript(self, meeting: dict, registry=None) -> tuple[str, list[str]]:
         """Markdown with wall-clock times plus the raw line texts (for checks)."""
         rows, texts = [f"# {meeting['title'].replace(chr(10), ' ')}", ""], []
+        registry = cached_names(registry)
         for segment_id in meeting["segment_ids"]:
             segment = self.segments[segment_id]
             start = epoch(segment["started_at"])
@@ -283,12 +349,13 @@ class Store:
                 rows += ["*No speech.*", ""]
         return "\n".join(rows) + "\n", texts
 
-    def finish_segment(self, segment: dict, title: str, registry=None) -> None:
-        """Render transcript.md from the journal and set status, line count and metadata."""
+    def finish_segment(self, segment: dict, title: str, registry=None, events: list[dict] | None = None) -> None:
+        """Render transcript.md from the journal (or already-parsed `events`) and set status, line count and metadata."""
         directory = self.segment_dir(segment["id"])
         journal = directory / "events.jsonl"
         journal.touch()
-        events = read_segments(journal)
+        if events is None:
+            events = read_segments(journal)
         atomic_write(directory / "transcript.md", render_transcript(events, title, registry))
         segment["line_count"] = sum(1 for event in events if event["text"].strip())
         segment["status"] = "closed" if segment["line_count"] else "empty"

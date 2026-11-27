@@ -1,13 +1,14 @@
 import { memo, useCallback, useMemo, useState } from "react";
 import { api } from "../api/client";
-import { groupMeetings } from "../lib/grouping";
-import { useAppState, useDispatch, useStore } from "../state/store";
+import { groupMeetings, orphanSegments } from "../lib/grouping";
+import { useAppState, useAppStateList, useDispatch, useStore } from "../state/store";
 import type { Meeting } from "../types";
 import { MeetingCard } from "./MeetingCard";
 
 export function MeetingsTimeline({ onOpen }: { onOpen: (id: string) => void }) {
   const meetings = useAppState((s) => s.meetings);
-  const segments = useAppState((s) => s.segments);
+  // Only segments without a loaded meeting affect grouping; per-second line_count updates do not.
+  const orphans = useAppStateList((s) => orphanSegments(s.meetings, s.segments));
   const exhausted = useAppState((s) => s.olderExhausted);
   const hasSnapshot = useAppState((s) => s.hasSnapshot);
   const store = useStore();
@@ -16,7 +17,7 @@ export function MeetingsTimeline({ onOpen }: { onOpen: (id: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
 
-  const groups = useMemo(() => groupMeetings(meetings, segments), [meetings, segments]);
+  const groups = useMemo(() => groupMeetings(meetings, orphans), [meetings, orphans]);
 
   // Drop selections for meetings that no longer exist (merged away, removed).
   const liveSelected = selected.filter((id) => id in meetings);
@@ -43,7 +44,7 @@ export function MeetingsTimeline({ onOpen }: { onOpen: (id: string) => void }) {
   const loadOlder = async () => {
     const segs = Object.values(store.getState().segments);
     if (segs.length === 0) return;
-    const oldest = segs.reduce((a, b) => (a.started_at <= b.started_at ? a : b));
+    const oldest = segs.reduce((a, b) => (Date.parse(a.started_at) <= Date.parse(b.started_at) ? a : b));
     setLoadingOlder(true);
     try {
       // The server returns the older page together with the meetings it references.
@@ -140,10 +141,7 @@ const MeetingCardConnected = memo(function MeetingCardConnected(props: {
   onToggle: (id: string, on: boolean) => void;
   onOpen: (id: string) => void;
 }) {
-  const segments = useAppState((s) => s.segments);
-  const segs = useMemo(
-    () => props.meeting.segment_ids.map((id) => segments[id] ?? id),
-    [props.meeting.segment_ids, segments],
-  );
+  // Select just this meeting's segments, so an update to another meeting's segment skips this card.
+  const segs = useAppStateList((s) => props.meeting.segment_ids.map((id) => s.segments[id] ?? id));
   return <MeetingCard {...props} segments={segs} />;
 });

@@ -128,3 +128,17 @@ def test_invalid_speaker_uuid_in_journal_is_rejected(tmp_path):
     journal.write_text(json.dumps(segment("not-a-uuid")) + "\n")
     with pytest.raises(ValueError, match="speaker UUID"):
         read_segments(journal)
+
+
+def test_registry_reads_are_cached_until_the_file_changes(tmp_path, monkeypatch):
+    add_speaker(tmp_path, ALICE, name="Alice")
+    registry = SpeakerRegistry(tmp_path)
+    assert registry.display_name(ALICE) == "Alice"
+    reads = []
+    original = type(tmp_path).read_text
+    monkeypatch.setattr(type(tmp_path), "read_text", lambda self, *a, **kw: reads.append(self) or original(self, *a, **kw))
+    names = registry.cached()
+    assert [names.display_name(ALICE) for _ in range(50)] == ["Alice"] * 50
+    assert reads == []  # unchanged speaker.json is not re-read
+    registry.set_name(ALICE, "Alicia")  # rewrites the file, so the cache is invalidated
+    assert registry.display_name(ALICE) == "Alicia"

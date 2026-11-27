@@ -57,7 +57,6 @@ class Recorder:
         self.live: deque[dict] = deque(maxlen=300)
         self.levels: dict = {}
         self.partials: dict[str, dict] = {}
-        self.last_level: float | None = None
         self.last_speech = time.monotonic()
         self.next_boundary: float | None = None
         self.memory_restart = False
@@ -256,7 +255,6 @@ class Recorder:
     def _on_event(self, event: dict, run: int, origin: float | None):
         kind = event["type"]
         if kind == "level":
-            self.last_level = time.monotonic()
             self.levels[event.get("source", "mic")] = {"rms": event.get("rms", 0), "peak": event.get("peak", 0)}
             return
         if kind == "partial":

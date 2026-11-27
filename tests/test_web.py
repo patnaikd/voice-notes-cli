@@ -540,6 +540,7 @@ def test_notes_jobs_coalesce_while_queued(tmp_path):
         assert server.jobs.enqueue("notes", "m2") is not first
         first["status"] = "running"
         assert server.jobs.enqueue("notes", "m1") is not first  # a running job does not block a newer one
+        server.store.flush()
         assert json.loads((server.store.root / "jobs.json").read_text())["jobs"][0]["target"] == "m1"
     asyncio.run(scenario())
 
@@ -583,3 +584,21 @@ def test_service_plist(tmp_path):
 def test_serve_refuses_remote_host(tmp_path):
     from voice_notes import cli
     assert cli.main(["serve", "--host", "0.0.0.0", "--data-dir", str(tmp_path)]) == 1
+
+
+def test_index_saves_are_coalesced_inside_the_event_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(Store, "FLUSH_DELAY", 0.05)
+    store = Store(tmp_path)
+    writes = []
+    original = store._write
+    monkeypatch.setattr(store, "_write", lambda *args: writes.append(args[0]) or original(*args))
+
+    async def scenario():
+        for number in range(20):
+            store.meetings[f"m{number}"] = {"id": f"m{number}"}
+            store.save_index()
+        assert writes == []  # nothing written synchronously
+        await asyncio.sleep(0.3)
+    asyncio.run(scenario())
+    assert writes == ["index"]
+    assert len(json.loads((tmp_path / "index.json").read_text())["meetings"]) == 20

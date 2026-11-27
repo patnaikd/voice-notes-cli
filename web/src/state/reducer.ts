@@ -12,6 +12,7 @@ import type {
   Source,
   Speaker,
 } from "../types";
+import { byStartDesc } from "../lib/grouping";
 
 export const LIVE_LINES_CAP = 300;
 export const ACTIVITY_CAP = 100;
@@ -100,7 +101,7 @@ function capSegments(segments: Record<string, Segment>): Record<string, Segment>
   if (ids.length <= SEGMENTS_CAP) return segments;
   const sorted = ids
     .map((id) => segments[id])
-    .sort((a, b) => (a.started_at < b.started_at ? 1 : -1))
+    .sort(byStartDesc)
     .slice(0, SEGMENTS_CAP);
   return byId(sorted);
 }
@@ -193,8 +194,11 @@ export function reducer(state: AppState, action: Action): AppState {
         live: { segment_id: state.live.segment_id ?? line.segment_id, lines: upsertLine(state.live.lines, line) },
       };
     }
-    case "segment":
-      return { ...state, segments: capSegments({ ...state.segments, [action.segment.id]: action.segment }) };
+    case "segment": {
+      // Updates to a known segment (line counts, every second while recording) cannot exceed the cap.
+      const segments = { ...state.segments, [action.segment.id]: action.segment };
+      return { ...state, segments: action.segment.id in state.segments ? segments : capSegments(segments) };
+    }
     case "meeting":
       return { ...state, meetings: { ...state.meetings, [action.meeting.id]: action.meeting } };
     case "meeting_removed": {

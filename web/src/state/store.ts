@@ -49,6 +49,21 @@ export function useAppState<T>(selector: (s: AppState) => T): T {
   );
 }
 
+/**
+ * Like `useAppState` for a selector that builds a new array: the previous array is returned while its
+ * items are unchanged (===), so subscribers re-render only when one of their items changes.
+ */
+export function useAppStateList<T>(selector: (s: AppState) => T[]): T[] {
+  const previous = useRef<T[] | null>(null);
+  return useAppState((s) => {
+    const next = selector(s);
+    const prev = previous.current;
+    if (prev && prev.length === next.length && prev.every((item, i) => item === next[i])) return prev;
+    previous.current = next;
+    return next;
+  });
+}
+
 export function useDispatch(): Store["dispatch"] {
   return useStore().dispatch;
 }

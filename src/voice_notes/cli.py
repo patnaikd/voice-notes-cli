@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import importlib.metadata
 import json
+import math
 import os
 import platform
 import signal
@@ -14,8 +15,8 @@ from pathlib import Path
 from .capture import fluid_models_dir, helper_arguments, list_devices, parse_event, startup_timeout
 from .native import build_helper
 from .meter import AudioMeter
-from .refine import refine
-from .session import atomic_write, read_segments, render_transcript, timestamp
+from .refine import CLI_ENV, claude_cli, refine
+from .session import atomic_write, meeting_title, read_segments, render_transcript, timestamp
 from .speakers import DEFAULT_DIR, SpeakerRegistry, rerender_transcripts, short_id
 
 
@@ -182,14 +183,14 @@ def record(args):
 
 def doctor(args):
     print(f"macOS: {platform.mac_ver()[0] or 'not macOS'}; architecture: {platform.machine()}")
-    for package in ("claude-agent-sdk",):
-        try:
-            print(f"{package}: {importlib.metadata.version(package)}")
-        except importlib.metadata.PackageNotFoundError:
-            print(f"{package}: not installed")
+    try:
+        print(f"claude-agent-sdk: {importlib.metadata.version('claude-agent-sdk')}")
+    except importlib.metadata.PackageNotFoundError:
+        print("claude-agent-sdk: not installed")
     enrolled = SpeakerRegistry(args.speakers_dir).list()
     print(f"Speaker registry: {args.speakers_dir} ({len(enrolled)} enrolled, "
           f"{sum(1 for speaker in enrolled if speaker['name']) } named)")
+    print("Claude CLI: " + (claude_cli() or "bundled with claude-agent-sdk"))
     print("ANTHROPIC_API_KEY: " + ("set" if os.environ.get("ANTHROPIC_API_KEY") else "not set; Claude Code login may be usable"))
     result = subprocess.run([str(build_helper(args.build_dir)), "--doctor"], capture_output=True, text=True, timeout=30)
     if result.returncode:
@@ -258,7 +259,6 @@ def manage_speakers(args):
 
 
 def positive(value):
-    import math
     number = float(value)
     if not math.isfinite(number) or number <= 0:
         raise argparse.ArgumentTypeError("must be a positive finite number")
@@ -285,6 +285,9 @@ def main(argv=None):
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
     parser.add_argument("--speakers-dir", type=Path, default=DEFAULT_DIR,
                         help=f"Speaker registry (default: {DEFAULT_DIR}; env VOICE_NOTES_SPEAKERS)")
+    parser.add_argument("--claude-cli", metavar="PATH",
+                        help="Claude Code CLI to use instead of the one bundled with the Agent SDK "
+                             "(env VOICE_NOTES_CLAUDE_CLI)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor", help="Check native speech availability, dependencies, and permissions")
     sub.add_parser("build", help="Compile the native capture helper")
@@ -356,6 +359,9 @@ def main(argv=None):
     try:
         from dotenv import load_dotenv
         load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+        if args.claude_cli:
+            # Through the environment so the refine worker, the server and the launchd agent all see it.
+            os.environ[CLI_ENV] = args.claude_cli
         if args.command == "record":
             record(args)
         elif args.command == "serve":
@@ -370,8 +376,7 @@ def main(argv=None):
             manage_speakers(args)
         elif args.command == "transcript":
             registry = SpeakerRegistry(args.speakers_dir)
-            metadata = args.journal.parent / "meeting.json"
-            title = args.title or (json.loads(metadata.read_text()).get("title", "Meeting") if metadata.exists() else "Meeting")
+            title = args.title or meeting_title(args.journal.parent)
             path = args.journal.parent / "transcript.md"
             atomic_write(path, render_transcript(read_segments(args.journal), title, registry))
             print(path)
@@ -380,8 +385,7 @@ def main(argv=None):
         elif args.command == "devices":
             devices(args)
         elif args.command == "refine":
-            metadata = args.journal.parent / "meeting.json"
-            title = args.title or (json.loads(metadata.read_text()).get("title", "Meeting") if metadata.exists() else "Meeting")
+            title = args.title or meeting_title(args.journal.parent)
             print(format_notes(args.journal, title, args.model, registry=SpeakerRegistry(args.speakers_dir)))
     except KeyboardInterrupt:
         print("voice-notes: Interrupted. Saved transcripts and formatting checkpoints are preserved.", file=sys.stderr)

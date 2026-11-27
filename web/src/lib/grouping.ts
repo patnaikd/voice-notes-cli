@@ -22,16 +22,26 @@ function placeholderMeeting(seg: Segment): Meeting {
   };
 }
 
-export function groupMeetings(meetings: Record<string, Meeting>, segments: Record<string, Segment>): DayGroup[] {
-  const all: Record<string, Meeting> = { ...meetings };
-  // Segments already listed by a known meeting are covered even if their own
-  // meeting_id is momentarily stale (e.g. meeting_removed arrived before the segment upsert).
+/**
+ * Segments whose meeting has not been loaded (yet). Segments already listed by a known meeting are
+ * covered even if their own meeting_id is momentarily stale (e.g. meeting_removed arrived before the
+ * segment upsert).
+ */
+export function orphanSegments(meetings: Record<string, Meeting>, segments: Record<string, Segment>): Segment[] {
   const covered = new Set<string>();
   for (const m of Object.values(meetings)) for (const id of m.segment_ids) covered.add(id);
-  for (const seg of Object.values(segments)) {
-    if (seg.meeting_id && !all[seg.meeting_id] && !covered.has(seg.id)) all[seg.meeting_id] = placeholderMeeting(seg);
-  }
-  const sorted = Object.values(all).sort((a, b) => (a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0));
+  return Object.values(segments).filter((seg) => seg.meeting_id && !meetings[seg.meeting_id] && !covered.has(seg.id));
+}
+
+/** Newest first. ISO strings with different UTC offsets (e.g. across DST) do not sort as text. */
+export function byStartDesc(a: { started_at: string }, b: { started_at: string }): number {
+  return Date.parse(b.started_at) - Date.parse(a.started_at);
+}
+
+export function groupMeetings(meetings: Record<string, Meeting>, orphans: Segment[]): DayGroup[] {
+  const all: Record<string, Meeting> = { ...meetings };
+  for (const seg of orphans) if (!all[seg.meeting_id]) all[seg.meeting_id] = placeholderMeeting(seg);
+  const sorted = Object.values(all).sort(byStartDesc);
   const groups: DayGroup[] = [];
   const now = new Date();
   for (const m of sorted) {

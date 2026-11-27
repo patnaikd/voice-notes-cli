@@ -66,7 +66,22 @@ def speaker_label(segment: dict, registry=None) -> str:
     return "Microphone" if segment["source"] == "mic" else "Remote audio"
 
 
+def cached_names(registry):
+    """Memoize speaker lookups for one render (a registry reads speaker.json per call)."""
+    return registry.cached() if registry is not None and hasattr(registry, "cached") else registry
+
+
+def meeting_title(directory: Path, default: str = "Meeting") -> str:
+    """The title saved in a meeting folder's meeting.json, or `default`."""
+    try:
+        title = json.loads((Path(directory) / "meeting.json").read_text()).get("title")
+    except (OSError, ValueError, AttributeError):
+        return default
+    return title if isinstance(title, str) and title else default
+
+
 def render_transcript(segments: list[dict], title: str, registry=None) -> str:
+    registry = cached_names(registry)
     rows = [f"# {title.replace(chr(10), ' ')}", "", "## Transcript", ""]
     for segment in segments:
         if not segment["text"].strip():

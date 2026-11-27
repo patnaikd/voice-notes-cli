@@ -14,3 +14,21 @@ jobs:
       - run: uv sync --locked --all-extras
       - run: uv run --locked pytest -q
       - run: uv build --no-sources
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      # The runner's preinstalled Node is used; vite needs Node 20.19+.
+      - run: node --version
+      - run: npm ci
+      - run: npx vitest run
+      - run: npm run build
+      - name: Committed bundle matches web/src
+        run: |
+          git status --porcelain -- ../src/voice_notes/web/static
+          test -z "$(git status --porcelain -- ../src/voice_notes/web/static)" || {
+            echo "::error::src/voice_notes/web/static is stale; run npm --prefix web run build and commit it"; exit 1; }

@@ -261,11 +261,20 @@ final class FluidTrack {
 
     private struct Span { let slot: Int; let start: Double; let end: Double }
 
-    private func spans() -> [Span] {
+    /// Diarizer spans that can touch words between `start` and `end`. The timeline holds every
+    /// span since the helper started, so filtering keeps attribution cost flat through an all-day run.
+    private func spans(from start: Double, to end: Double) -> [Span] {
+        // Words in a gap fall back to the nearest span within 0.6 s (see `slot(of:in:)`).
+        let lower = start - 1.0, upper = end + 1.0
         var result: [Span] = []
         for (slot, speaker) in diarizer.timeline.speakers {
-            for segment in speaker.finalizedSegments + speaker.tentativeSegments {
-                result.append(Span(slot: slot, start: Double(segment.startTime), end: Double(segment.endTime)))
+            for segments in [speaker.finalizedSegments, speaker.tentativeSegments] {
+                for segment in segments {
+                    let spanStart = Double(segment.startTime), spanEnd = Double(segment.endTime)
+                    if spanEnd >= lower && spanStart <= upper {
+                        result.append(Span(slot: slot, start: spanStart, end: spanEnd))
+                    }
+                }
             }
         }
         return result
@@ -288,7 +297,8 @@ final class FluidTrack {
     private struct Run { var slot: Int?; var words: [WordTiming] }
 
     private func runs(_ words: [WordTiming]) -> [Run] {
-        let spans = spans()
+        guard let first = words.first, let last = words.last else { return [] }
+        let spans = spans(from: first.startTime, to: spokenEnd(last))
         var result: [Run] = []
         for word in words {
             let slot = self.slot(of: word, in: spans) ?? result.last?.slot
