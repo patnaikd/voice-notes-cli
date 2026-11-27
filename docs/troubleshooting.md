@@ -10,6 +10,8 @@ A capture startup deadline expires after 120 seconds. Permission prompts and fir
 
 `doctor` microphone statuses: `0` not requested, `1` restricted, `2` denied, `3` authorized. Sandboxed tools may report different permissions from your normal terminal, so verify there.
 
+`doctor` also reports whether Apple Intelligence's on-device model is usable, a first step toward writing notes offline. It needs an Apple silicon Mac on macOS 26 or newer. "Turned off" means you should enable it in **System Settings → Apple Intelligence & Siri**; "still downloading" clears once the model finishes downloading (keep the Mac on power and Wi-Fi). Notes are still written by Claude either way.
+
 ## Microphone or speaker silence
 
 | Meter state | Meaning | Next step |
