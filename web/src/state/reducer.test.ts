@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupMeetings } from "../lib/grouping";
+import { groupMeetings, orphanSegments } from "../lib/grouping";
 import { line, meeting, seg, snapshot } from "../test/fixtures";
 import { ACTIVITY_CAP, initialState, LIVE_LINES_CAP, reducer, type AppState } from "./reducer";
 
@@ -143,9 +143,19 @@ describe("groupMeetings", () => {
       s2: seg("s2", { meeting_id: "gone" }), // stale meeting_id, but covered by "a"
       s4: seg("s4", { meeting_id: "unknown", started_at: "2026-11-25T11:00:00-08:00" }),
     };
-    const groups = groupMeetings(meetings, segments);
+    const groups = groupMeetings(meetings, orphanSegments(meetings, segments));
     expect(groups).toHaveLength(2);
     expect(groups[0].meetings.map((m) => m.id)).toEqual(["unknown", "a"]);
     expect(groups[1].meetings.map((m) => m.id)).toEqual(["b"]);
+  });
+
+  it("orders by instant, not by text, when UTC offsets differ", () => {
+    // The DST fall-back hour: 01:15-08:00 (09:15Z) is newer than 01:30-07:00 (08:30Z), though it sorts lower as text.
+    const meetings = {
+      pdt: meeting("pdt", { started_at: "2026-11-01T01:30:00-07:00", segment_ids: [] }),
+      pst: meeting("pst", { started_at: "2026-11-01T01:15:00-08:00", segment_ids: [] }),
+    };
+    const groups = groupMeetings(meetings, []);
+    expect(groups[0].meetings.map((m) => m.id)).toEqual(["pst", "pdt"]);
   });
 });

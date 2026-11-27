@@ -204,7 +204,9 @@ class JobQueue:
             self._continuation_done(segment["id"], {"status": "skipped", "is_continuation": None,
                                                     "confidence": None, "reason": "Meeting changed before the check"})
             return
-        before, before_texts = await asyncio.to_thread(store.meeting_transcript, target, server.registry)
+        # Only the end of the earlier meeting is compared, so render just its last segment, not the whole day.
+        tail = {**target, "segment_ids": [previous["id"]]}
+        before, before_texts = await asyncio.to_thread(store.meeting_transcript, tail, server.registry)
         after, after_texts = await asyncio.to_thread(store.meeting_transcript, own, server.registry)
         if server.config.fake_llm:
             await asyncio.sleep(0.1)

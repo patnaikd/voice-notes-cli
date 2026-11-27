@@ -161,8 +161,9 @@ class Server:
                 task.cancel()
             await asyncio.gather(*self.tasks, return_exceptions=True)
             self.store.save_index()
-            self.store.save_state()
             self.store.save_jobs()
+            self.store.flush()
+            self.store.save_state()
 
     async def _ticker(self):
         tick = 0
@@ -243,14 +244,17 @@ class Server:
                 self.enqueue_notes(meeting)
         return meetings
 
-    def delete_meeting(self, meeting_id: str) -> Path:
+    async def delete_meeting(self, meeting_id: str) -> Path:
         meeting = self.store.meetings[meeting_id]
         if any(self.store.segments[i]["status"] in OPEN for i in meeting["segment_ids"]):
             raise RuntimeError("Stop recording before deleting this meeting")
         busy = {meeting_id, *meeting["segment_ids"]}
         if any(job["status"] == "running" and job["target"] in busy for job in self.jobs.jobs):
             raise RuntimeError("Notes are being generated for this meeting; try again when they finish")
-        segment_ids, trash = self.store.delete_meeting(meeting_id)
+        segment_ids = list(meeting["segment_ids"])
+        # Only the folder moves leave the event loop; the index, hub and activity log are loop-only.
+        trash = await asyncio.to_thread(self.store.trash_folders, meeting_id, segment_ids)
+        self.store.forget_meeting(meeting_id, segment_ids)
         self.store.save_index()
         # Meeting first: an open detail view then stops refetching before its segments vanish.
         self.hub.broadcast("meeting_removed", id=meeting_id)
@@ -429,7 +433,7 @@ def create_app(server: Server) -> FastAPI:
     async def delete_meeting(meeting_id: str):
         meeting_or_404(meeting_id)
         try:
-            trash = await asyncio.to_thread(server.delete_meeting, meeting_id)
+            trash = await server.delete_meeting(meeting_id)
         except RuntimeError as error:
             raise HTTPException(409, str(error))
         return {"deleted": meeting_id, "trash": str(trash)}

@@ -17,6 +17,9 @@ def build_plist(*, port: int, data_dir: Path, working_dir: Path, build_dir: Path
     source_root = Path(__file__).resolve().parents[2]
     environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
                    "PYTHONPATH": str(source_root), "PYTHONUNBUFFERED": "1"}
+    from ..refine import CLI_ENV, claude_cli
+    if cli := claude_cli():
+        environment[CLI_ENV] = cli
     return {
         "Label": LABEL,
         "ProgramArguments": [sys.executable, "-m", "voice_notes.cli", "--build-dir", str(build_dir.resolve()),

@@ -15,7 +15,7 @@ import uuid as uuid_module
 from datetime import datetime
 from pathlib import Path
 
-from .session import atomic_write, read_segments, render_transcript
+from .session import atomic_write, meeting_title, read_segments, render_transcript
 
 DEFAULT_DIR = Path(os.environ.get("VOICE_NOTES_SPEAKERS") or Path.home() / ".voice-notes" / "speakers")
 MAX_NAME_LENGTH = 100
@@ -46,6 +46,12 @@ def clean_name(name: str) -> str:
 class SpeakerRegistry:
     def __init__(self, root: Path | None = None):
         self.root = Path(root) if root is not None else DEFAULT_DIR
+        # speaker.json contents keyed by path, reused while the file's mtime and size are unchanged.
+        self._cache: dict[Path, tuple[tuple[int, int], dict]] = {}
+
+    def cached(self) -> "CachedNames":
+        """A display-name lookup memoized for one render; it does not see later registry changes."""
+        return CachedNames(self)
 
     def _directory(self, identifier: str) -> Path:
         if not is_uuid(identifier):
@@ -56,11 +62,21 @@ class SpeakerRegistry:
         return self._directory(identifier) / "sample.wav"
 
     def read(self, identifier: str) -> dict | None:
+        path = self._directory(identifier) / "speaker.json"
         try:
-            data = json.loads((self._directory(identifier) / "speaker.json").read_text())
+            info = path.stat()
+            key = (info.st_mtime_ns, info.st_size)
+            hit = self._cache.get(path)
+            if hit and hit[0] == key:
+                return dict(hit[1])
+            data = json.loads(path.read_text())
         except (OSError, ValueError):
+            self._cache.pop(path, None)
             return None
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        self._cache[path] = (key, data)
+        return dict(data)
 
     def _write(self, identifier: str, data: dict) -> None:
         data["updated_at"] = datetime.now().astimezone().isoformat()
@@ -164,25 +180,42 @@ class SpeakerRegistry:
         directory.rmdir()
 
 
+class CachedNames:
+    """Memoized `display_name` for rendering many lines; speakers are read once each."""
+
+    def __init__(self, registry: SpeakerRegistry):
+        self.registry, self.names, self.resolved = registry, {}, {}
+
+    def cached(self) -> "CachedNames":
+        return self
+
+    def resolve(self, identifier: str) -> str:
+        if identifier not in self.resolved:
+            self.resolved[identifier] = self.registry.resolve(identifier)
+        return self.resolved[identifier]
+
+    def display_name(self, identifier: str) -> str:
+        if identifier not in self.names:
+            self.names[identifier] = self.registry.display_name(identifier)
+        return self.names[identifier]
+
+
 def rerender_transcripts(meetings: Path, registry: SpeakerRegistry, speakers: set[str] | None = None) -> list[Path]:
     """Re-render transcript.md for meetings that mention the given speakers (or all of them)."""
     updated = []
     if not Path(meetings).is_dir():
         return updated
     affected = {registry.resolve(identifier) for identifier in speakers} if speakers else None
+    names = registry.cached()
     for journal in sorted(Path(meetings).glob("*/events.jsonl")):
         try:
             segments = read_segments(journal)
         except (OSError, ValueError):
             continue
-        mentioned = {registry.resolve(s["speaker_uuid"]) for s in segments if s.get("speaker_uuid")}
+        mentioned = {names.resolve(s["speaker_uuid"]) for s in segments if s.get("speaker_uuid")}
         if not mentioned or (affected is not None and not (mentioned & affected)):
             continue
-        title = "Meeting"
-        try:
-            title = json.loads((journal.parent / "meeting.json").read_text()).get("title", title)
-        except (OSError, ValueError, AttributeError):
-            pass
-        atomic_write(journal.parent / "transcript.md", render_transcript(segments, title, registry))
+        atomic_write(journal.parent / "transcript.md",
+                     render_transcript(segments, meeting_title(journal.parent), names))
         updated.append(journal.parent / "transcript.md")
     return updated

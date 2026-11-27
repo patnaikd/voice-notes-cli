@@ -72,6 +72,8 @@ uv run voice-notes record --title "Weekly planning"
 
 The CLI loads `.env` **from the directory where you run it**, without overriding existing shell environment variables. `.env`, local recordings, and caches are ignored by Git. The default model is `claude-haiku-5-5`; `--model` selects another model available to your account.
 
+Notes are written by the Claude Code CLI that ships inside `claude-agent-sdk`. To use a different one, such as a newer `claude` you installed yourself, pass `--claude-cli /path/to/claude` before the command (`voice-notes --claude-cli ~/.local/bin/claude serve`) or set `VOICE_NOTES_CLAUDE_CLI`, also accepted in `.env`. `voice-notes doctor` shows which CLI is in use, and `voice-notes service install` keeps the choice for the launchd agent.
+
 On stopping, the app sends the saved transcript text to Claude and writes `notes.md`. It checks authentication before SDK startup, isolates formatting in a worker process, and gives each part a 180-second deadline. Provider errors are shown instead of a blank failure message. API usage is billed by your provider.
 
 ## Choose sources and devices

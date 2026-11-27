@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
-    "mock": "node mock/server.mjs"
+    "mock": "cd .. && uv run voice-notes --speakers-dir .mock/speakers serve --port 8799 --data-dir .mock/meetings --helper-command \"python tests/fake_helper.py --interval 2 --unique\" --fake-llm --segment-seconds 120"
   },
   "dependencies": {
     "react": "^19.3.1",

@@ -162,3 +162,94 @@ def test_auth_check_finds_bundled_claude_with_minimal_environment(tmp_path, monk
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     refine.ensure_authentication()  # does not raise
+
+
+def test_confirmed_login_is_cached(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(refine, "_login_verified", {})
+    monkeypatch.setattr(refine.shutil, "which", lambda _: "/fake/claude-cached")
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(stdout=json.dumps({"loggedIn": True}), returncode=0)
+
+    monkeypatch.setattr(refine.subprocess, "run", run)
+    refine.ensure_authentication()
+    refine.ensure_authentication()
+    assert len(calls) == 1
+
+
+def _fake_cli(tmp_path):
+    cli = tmp_path / "my-claude"
+    cli.write_text('#!/bin/sh\necho \'{"loggedIn": true}\'\n')
+    cli.chmod(0o755)
+    return cli
+
+
+def test_cli_override_is_used_for_login_check_and_sdk(tmp_path, monkeypatch):
+    import claude_agent_sdk as sdk
+    from types import SimpleNamespace
+
+    cli = _fake_cli(tmp_path)
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(refine.CLI_ENV, str(cli))
+    monkeypatch.setattr(refine, "_login_verified", {})
+    monkeypatch.setattr(refine.shutil, "which", lambda _: "/should/not/be/used")
+    ran = []
+    original = refine.subprocess.run
+    monkeypatch.setattr(refine.subprocess, "run", lambda command, **kw: ran.append(command[0]) or original(command, **kw))
+    refine.ensure_authentication()
+    assert ran == [str(cli.resolve())]
+
+    seen = []
+
+    async def query(*, prompt, options):
+        seen.append(options)
+        yield sdk.ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                                is_error=False, num_turns=1, session_id="test", result="# Notes")
+
+    monkeypatch.setattr(sdk, "query", query)
+    asyncio.run(refine._sdk_ask("Transcript", "claude-haiku-5-5"))
+    assert str(seen[0].cli_path) == str(cli.resolve())
+
+
+def test_sdk_keeps_bundled_cli_without_override(monkeypatch):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.delenv(refine.CLI_ENV, raising=False)
+    seen = []
+
+    async def query(*, prompt, options):
+        seen.append(options)
+        yield sdk.ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1,
+                                is_error=False, num_turns=1, session_id="test", result="# Notes")
+
+    monkeypatch.setattr(sdk, "query", query)
+    asyncio.run(refine._sdk_ask("Transcript", "claude-haiku-5-5"))
+    assert seen[0].cli_path is None
+
+
+def test_missing_cli_override_fails_clearly(tmp_path, monkeypatch):
+    monkeypatch.setenv(refine.CLI_ENV, str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="Claude CLI not found"):
+        refine.claude_cli()
+
+
+def test_cli_flag_reaches_environment_and_launchd_agent(tmp_path, monkeypatch):
+    from voice_notes import cli as command
+    from voice_notes.web import service
+
+    fake = _fake_cli(tmp_path)
+    monkeypatch.delenv(refine.CLI_ENV, raising=False)
+    monkeypatch.setattr(command, "manage_speakers", lambda args: None)
+    assert command.main(["--claude-cli", str(fake), "speakers", "list"]) == 0
+    assert refine.claude_cli() == str(fake.resolve())
+    plist = service.build_plist(port=1, data_dir=tmp_path, working_dir=tmp_path,
+                                build_dir=tmp_path, speakers_dir=tmp_path)
+    assert plist["EnvironmentVariables"][refine.CLI_ENV] == str(fake.resolve())

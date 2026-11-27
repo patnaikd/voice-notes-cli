@@ -29,7 +29,7 @@ voice-notes = "_voice_notes_launcher:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/voice_notes"]
 
-# The built frontend may be git-ignored; ship it whenever it exists.
+# The built frontend is committed (CI checks it matches web/src); ship it whenever it exists.
 artifacts = ["src/voice_notes/web/static/**"]
 
 [tool.hatch.build.targets.wheel.force-include]
