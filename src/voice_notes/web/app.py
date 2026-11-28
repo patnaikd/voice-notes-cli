@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
+from .. import config as user_config
 from ..capture import fluid_models_dir, helper_arguments, list_devices
 from ..native import build_helper
 from ..speakers import SpeakerRegistry, rerender_transcripts
@@ -27,6 +28,8 @@ from .recorder import Recorder
 from .store import OPEN, Store, epoch, iso, order, validate_settings
 
 log = logging.getLogger("voice_notes.web")
+# Server settings that are also user config keys (~/.voice-notes-config.json).
+SHARED_SETTINGS = ("engine", "source", "mic", "locale", "model")
 STATIC = Path(__file__).parent / "static"
 PLACEHOLDER = """<!doctype html><meta charset="utf-8"><title>Voice Notes</title>
 <body style="font-family:system-ui;max-width:40em;margin:4em auto;padding:0 1em">
@@ -48,6 +51,10 @@ class Config:
     startup_timeout: float | None = None  # default: 120 s, 600 s for fluid
     helper_command: str | None = None
     fake_llm: bool = False
+    # Settings from flags, environment or ~/.voice-notes-config.json; they replace saved settings at startup.
+    settings_overrides: dict = field(default_factory=dict)
+    # The user config file that settings changed in the browser are written back to (None: not written).
+    config_file: Path | None = None
     health_interval: float = 5.0
     ping_interval: float = 15.0
     server_warn_mb: float = 1024
@@ -62,6 +69,11 @@ class Server:
     def __init__(self, config: Config):
         self.config = config
         self.store = Store(config.data_dir)
+        if config.settings_overrides:
+            try:
+                self.store.settings = validate_settings(config.settings_overrides, self.store.settings)
+            except ValueError as error:
+                log.error("Ignoring invalid settings from the configuration: %s", error)
         self.hub = Hub()
         self.registry = SpeakerRegistry(config.speakers_dir)
         self.activity_log: deque[dict] = deque(maxlen=100)
@@ -110,9 +122,25 @@ class Server:
     def validate_settings(self, changes: dict) -> dict:
         return validate_settings(changes, self.store.settings)
 
+    def set_settings(self, changes: dict) -> dict:
+        """Apply settings changed in the browser, and keep the user config file in step with them."""
+        before = self.store.settings
+        self.store.settings = self.validate_settings(changes)
+        self.store.save_state()
+        changed = {key: self.store.settings[key] for key in SHARED_SETTINGS
+                   if self.store.settings[key] != before.get(key)}
+        if changed and self.config.config_file:
+            try:
+                user_config.save(changed, self.config.config_file)
+            except OSError as error:
+                self.error(f"Could not save settings to {self.config.config_file}: {error}", error)
+        self.hub.broadcast("settings", settings=self.store.settings)
+        return self.store.settings
+
     async def helper_command(self, settings: dict) -> list[str]:
         base = await self.helper_base()
         return base + helper_arguments(engine=settings["engine"], source=settings["source"], mic=settings["mic"],
+                                       locale=settings["locale"],
                                        speakers_dir=self.registry.root,
                                        models_dir=fluid_models_dir() if settings["engine"] == "fluid" else None)
 
@@ -370,12 +398,9 @@ def create_app(server: Server) -> FastAPI:
     @app.put("/api/settings")
     async def put_settings(request: Request):
         try:
-            store.settings = server.validate_settings(await json_body(request))
+            return server.set_settings(await json_body(request))
         except ValueError as error:
             raise HTTPException(400, str(error))
-        store.save_state()
-        server.hub.broadcast("settings", settings=store.settings)
-        return store.settings
 
     @app.get("/api/segments")
     async def segments(before: str | None = None, limit: int = 50):
@@ -597,7 +622,9 @@ def serve(args) -> int:
     config = Config(data_dir=args.data_dir, build_dir=args.build_dir, speakers_dir=args.speakers_dir,
                     segment_seconds=args.segment_seconds, grace_seconds=args.grace_seconds,
                     stall_seconds=args.stall_seconds or 60.0, helper_command=args.helper_command,
-                    fake_llm=args.fake_llm)
+                    fake_llm=args.fake_llm, config_file=user_config.config_path(),
+                    settings_overrides={key: args.settings[key] for key in SHARED_SETTINGS
+                                        if args.config_sources[key] != "default"})
     setup_logging(config.data_dir)
     server = Server(config)
     uv = uvicorn.Server(uvicorn.Config(create_app(server), host=args.host, port=args.port, log_level="info",

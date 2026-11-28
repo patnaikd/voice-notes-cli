@@ -12,12 +12,13 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from . import config as user_config
 from .capture import fluid_models_dir, helper_arguments, list_devices, parse_event, startup_timeout
 from .native import build_helper
 from .meter import AudioMeter
 from .refine import CLI_ENV, claude_cli, refine
 from .session import atomic_write, meeting_title, read_segments, render_transcript, timestamp
-from .speakers import DEFAULT_DIR, SpeakerRegistry, rerender_transcripts, short_id
+from .speakers import SpeakerRegistry, rerender_transcripts, short_id
 
 
 def format_notes(journal: Path, title: str, model: str, *, registry=None) -> Path:
@@ -318,11 +319,65 @@ def devices(args):
     print('\nSelect an input with: voice-notes record --mic "Microphone name or UID"')
 
 
+# Command-line attribute -> config key. Every subcommand that has one of these reads it from the config.
+CONFIG_FIELDS = {"output": "meetings_dir", "data_dir": "meetings_dir", "meetings": "meetings_dir",
+                 "speakers_dir": "speakers_dir", "claude_cli": "claude_cli", "engine": "engine", "locale": "locale",
+                 "source": "source", "mic": "mic", "model": "model", "port": "port"}
+PATH_FIELDS = {"output", "data_dir", "meetings", "speakers_dir"}
+COMMAND_DEFAULTS = {"engine": "apple"}  # `record` when no engine is configured; the web interface keeps its own
+
+
+def apply_config(args):
+    """Fill options left off the command line: environment, then config file, then defaults."""
+    flags = {key: getattr(args, attr) for attr, key in CONFIG_FIELDS.items() if getattr(args, attr, None) is not None}
+    values, sources = user_config.resolve(flags)
+    for attr, key in CONFIG_FIELDS.items():
+        if hasattr(args, attr) and getattr(args, attr) is None:
+            value = values[key] if values[key] is not None else COMMAND_DEFAULTS.get(attr)
+            setattr(args, attr, Path(value).expanduser() if attr in PATH_FIELDS and value is not None else value)
+    if not hasattr(args, "port"):
+        args.port = values["port"]
+    if not hasattr(args, "data_dir"):
+        args.data_dir = Path(values["meetings_dir"]).expanduser()
+    args.settings, args.config_sources = values, sources
+
+
+def configure(args) -> int:
+    if args.set or args.unset:
+        changes = dict(user_config.parse_assignment(item) for item in args.set)
+        for key in args.unset:
+            key = key.strip().replace("-", "_")
+            user_config.validate(key, None)  # rejects unknown keys
+            changes[key] = None
+        path = user_config.save(changes)
+        print(f"Saved {path}")
+    elif not args.show:
+        if not sys.stdin.isatty():
+            raise RuntimeError("configure needs a terminal; use --set KEY=VALUE or --show in scripts")
+        try:
+            changes = user_config.interactive()
+        except EOFError:
+            print("\nNothing saved.")
+            return 1
+        path = user_config.save(changes)
+        print(f"Saved {path}" + ("" if changes else " (no changes)"))
+        if platform.system() == "Darwin":
+            print("Create a double-clickable app: voice-notes launcher install")
+        print("A running web interface or login service picks up changes when it restarts "
+              "(voice-notes service install restarts the service).")
+    print(user_config.show({key: getattr(args, key) for key in ("speakers_dir", "claude_cli")
+                            if getattr(args, key) is not None}))
+    return 0
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Transcribe a macOS meeting locally and write Haiku notes.")
+    parser = argparse.ArgumentParser(
+        description="Transcribe a macOS meeting locally and write Claude notes.",
+        epilog="Settings come from command-line flags, then VOICE_NOTES_* environment variables, then "
+               "~/.voice-notes-config.json (see `voice-notes configure`), then built-in defaults.")
     parser.add_argument("--build-dir", type=Path, default=Path(".build"))
-    parser.add_argument("--speakers-dir", type=Path, default=DEFAULT_DIR,
-                        help=f"Speaker registry (default: {DEFAULT_DIR}; env VOICE_NOTES_SPEAKERS)")
+    parser.add_argument("--speakers-dir", type=Path,
+                        help="Speaker registry (default: ~/.voice-notes/speakers; env VOICE_NOTES_SPEAKERS)")
     parser.add_argument("--claude-cli", metavar="PATH",
                         help="Claude Code CLI to use instead of the one bundled with the Agent SDK "
                              "(env VOICE_NOTES_CLAUDE_CLI)")
@@ -331,35 +386,35 @@ def main(argv=None):
     sub.add_parser("build", help="Compile the native capture helper")
     sub.add_parser("devices", help="List microphones and output devices, including system defaults")
     rec = sub.add_parser("record", help="Start recording; stop and format with Ctrl-C")
-    rec.add_argument("--engine", choices=["apple", "fluid"], default="apple",
-                     help="apple: Apple SpeechAnalyzer; "
+    rec.add_argument("--engine", choices=["apple", "fluid"],
+                     help="apple (default): Apple SpeechAnalyzer; "
                           "fluid: FluidAudio streaming recognition with named speaker identification (English)")
     rec.add_argument("--speaker-threshold", type=float, default=0.70,
                      help="Voice similarity (0-1) needed to match a known speaker with --engine fluid (default: 0.70)")
     rec.add_argument("--input-file", type=Path, help="Transcribe an audio file instead of recording (--engine fluid)")
     rec.add_argument("--input-realtime", action="store_true", help="Feed --input-file at live speed to test latency")
-    rec.add_argument("--source", choices=["both", "mic", "system"], default="both")
+    rec.add_argument("--source", choices=["both", "mic", "system"], help="Audio to capture (default: both)")
     rec.add_argument("--app", default="all", help="Capture all system audio (default), or filter by app bundle ID")
     rec.add_argument("--mic", help="Input device name or UID (default: macOS default input)")
     rec.add_argument("--title", default="Meeting")
-    rec.add_argument("--locale", default="en-US")
+    rec.add_argument("--locale", help="Speech recognition locale (default: en-US)")
     rec.add_argument("--partials", action="store_true", help="Also print in-progress text")
     rec.add_argument("--no-meter", action="store_true", help="Hide live microphone and speaker audio meters")
     rec.add_argument("--duration", type=positive, help="Automatically stop after this many recording seconds")
     rec.add_argument("--startup-timeout", type=positive, default=None,
                      help="Seconds to wait for capture readiness (default: 120; 600 for --engine fluid)")
     rec.add_argument("--no-refine", action="store_true", help="Keep transcription entirely local")
-    rec.add_argument("--output", type=Path, default=Path("meetings"))
-    rec.add_argument("--model", default="claude-haiku-5-5", help="Claude model alias or ID (default: claude-haiku-5-5)")
+    rec.add_argument("--output", type=Path, help="Meetings folder (default: meetings)")
+    rec.add_argument("--model", help="Claude model alias or ID (default: claude-haiku-5-5)")
     fmt = sub.add_parser("refine", help="Format or recover an existing meeting journal")
     fmt.add_argument("journal", type=Path)
     fmt.add_argument("--title")
-    fmt.add_argument("--model", default="claude-haiku-5-5")
+    fmt.add_argument("--model", help="Claude model alias or ID (default: claude-haiku-5-5)")
     render = sub.add_parser("transcript", help="Re-render transcript.md from a journal using current speaker names")
     render.add_argument("journal", type=Path)
     render.add_argument("--title")
     speakers = sub.add_parser("speakers", help="List, listen to, name, merge, or forget enrolled speakers")
-    speakers.add_argument("--meetings", type=Path, default=Path("meetings"),
+    speakers.add_argument("--meetings", type=Path,
                           help="Meetings folder whose transcripts are corrected when a speaker changes (default: meetings)")
     actions = speakers.add_subparsers(dest="action", required=True)
     actions.add_parser("list", help="Show enrolled speakers")
@@ -377,8 +432,8 @@ def main(argv=None):
     merge.add_argument("target", help="Speaker to keep")
     web = sub.add_parser("serve", help="Run the browser interface (all-day recording, segments, async notes)")
     web.add_argument("--host", default="127.0.0.1")
-    web.add_argument("--port", type=int, default=8765)
-    web.add_argument("--data-dir", type=Path, default=Path("meetings"))
+    web.add_argument("--port", type=int, help="Port (default: 8765)")
+    web.add_argument("--data-dir", type=Path, help="Meetings folder (default: meetings)")
     web.add_argument("--open", action="store_true", help="Open the interface in the default browser")
     web.add_argument("--allow-remote", action="store_true",
                      help="Allow a non-loopback --host (there is no authentication)")
@@ -391,12 +446,28 @@ def main(argv=None):
                      help=hidden)
     svc = sub.add_parser("service", help="Install, remove, or inspect the launchd agent that runs serve")
     svc.add_argument("action", choices=["install", "uninstall", "status"])
-    svc.add_argument("--port", type=int, default=8765)
-    svc.add_argument("--data-dir", type=Path, default=Path("meetings"))
+    svc.add_argument("--port", type=int, help="Pin a port instead of reading it from the config file")
+    svc.add_argument("--data-dir", type=Path, help="Pin a meetings folder instead of reading it from the config file")
+    conf = sub.add_parser("configure", help=f"Set up the meetings folder, speech recognition, Claude model and CLI "
+                                            f"(saved in ~/.voice-notes-config.json)",
+                          description="Without options, asks for each setting with its current value as the "
+                                      "default. Settings: " + ", ".join(user_config.BY_KEY))
+    conf.add_argument("--show", action="store_true", help="Print the effective settings and where each comes from")
+    conf.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="Save a setting (repeatable)")
+    conf.add_argument("--unset", action="append", default=[], metavar="KEY", help="Remove a setting (repeatable)")
+    launch = sub.add_parser("launcher", help="Create a double-clickable Voice Notes.app, or open the web interface")
+    launch.add_argument("action", choices=["install", "uninstall", "open"],
+                        help="install/uninstall: the app in --dest; open: start the server if needed and open "
+                             "the browser (what the app runs)")
+    launch.add_argument("--dest", type=Path, default=Path("~/Applications"),
+                        help="Folder for Voice Notes.app (default: ~/Applications)")
     args = parser.parse_args(argv)
     try:
         from dotenv import load_dotenv
         load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+        if args.command == "configure":
+            return configure(args)
+        apply_config(args)
         if args.claude_cli:
             # Through the environment so the refine worker, the server and the launchd agent all see it.
             os.environ[CLI_ENV] = args.claude_cli
@@ -422,6 +493,9 @@ def main(argv=None):
             print(build_helper(args.build_dir))
         elif args.command == "devices":
             devices(args)
+        elif args.command == "launcher":
+            from . import launcher
+            return launcher.main(args)
         elif args.command == "refine":
             title = args.title or meeting_title(args.journal.parent)
             print(format_notes(args.journal, title, args.model, registry=SpeakerRegistry(args.speakers_dir)))

@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import sys
 
 import pytest
@@ -247,9 +248,11 @@ def test_cli_flag_reaches_environment_and_launchd_agent(tmp_path, monkeypatch):
 
     fake = _fake_cli(tmp_path)
     monkeypatch.delenv(refine.CLI_ENV, raising=False)
-    monkeypatch.setattr(command, "manage_speakers", lambda args: None)
-    assert command.main(["--claude-cli", str(fake), "speakers", "list"]) == 0
+    seen = []
+    monkeypatch.setattr(service, "main", lambda args: seen.append(args) or 0)
+    assert command.main(["--claude-cli", str(fake), "service", "install"]) == 0
     assert refine.claude_cli() == str(fake.resolve())
-    plist = service.build_plist(port=1, data_dir=tmp_path, working_dir=tmp_path,
-                                build_dir=tmp_path, speakers_dir=tmp_path)
-    assert plist["EnvironmentVariables"][refine.CLI_ENV] == str(fake.resolve())
+    args = seen[0]
+    plist = service.build_plist(working_dir=tmp_path, build_dir=tmp_path,
+                                environment=service.pinned_environment(args.settings, args.config_sources))
+    assert Path(plist["EnvironmentVariables"][refine.CLI_ENV]).resolve() == fake.resolve()

@@ -572,13 +572,15 @@ def test_refine_worker_accepts_system_prompt(monkeypatch):
 
 def test_service_plist(tmp_path):
     from voice_notes.web.service import LABEL, build_plist
-    plist = build_plist(port=9000, data_dir=tmp_path / "m", working_dir=tmp_path, build_dir=tmp_path / ".build",
-                        speakers_dir=tmp_path / "s")
+    plist = build_plist(port=9000, data_dir=tmp_path / "m", working_dir=tmp_path, build_dir=tmp_path / ".build")
     assert plist["Label"] == LABEL and plist["KeepAlive"] and plist["RunAtLoad"]
     arguments = plist["ProgramArguments"]
     assert arguments[:3] == [sys.executable, "-m", "voice_notes.cli"] and "serve" in arguments
     assert arguments[arguments.index("--port") + 1] == "9000"
     assert plist["WorkingDirectory"] == str(tmp_path.resolve())
+    # Without pinned values the agent's serve reads port and folder from the config file on each start.
+    unpinned = build_plist(working_dir=tmp_path, build_dir=tmp_path / ".build")["ProgramArguments"]
+    assert unpinned[-1] == "serve" and "--port" not in unpinned and "--data-dir" not in unpinned
 
 
 def test_serve_refuses_remote_host(tmp_path):

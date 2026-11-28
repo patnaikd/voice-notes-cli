@@ -15,7 +15,7 @@ from ..session import atomic_write, cached_names, read_segments, render_transcri
 
 log = logging.getLogger("voice_notes.web")
 SEGMENT_NAME = re.compile(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(-\d+)?$")
-DEFAULT_SETTINGS = {"engine": "fluid", "source": "both", "mic": None, "model": "claude-haiku-5-5",
+DEFAULT_SETTINGS = {"engine": "fluid", "source": "both", "mic": None, "locale": "en-US", "model": "claude-haiku-5-5",
                     "segment_minutes": 30, "auto_merge": True, "auto_merge_min_confidence": 0.6}
 OPEN = ("recording", "closing")
 
@@ -74,6 +74,8 @@ def validate_settings(changes: dict, current: dict) -> dict:
             raise ValueError("source must be both, mic, or system")
         if key == "mic" and value is not None and not isinstance(value, str):
             raise ValueError("mic must be a string or null")
+        if key == "locale" and (not isinstance(value, str) or not value.strip()):
+            raise ValueError("locale must be a non-empty string")
         if key == "model" and (not isinstance(value, str) or not value.strip()):
             raise ValueError("model must be a non-empty string")
         if key == "segment_minutes" and (not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 720):
