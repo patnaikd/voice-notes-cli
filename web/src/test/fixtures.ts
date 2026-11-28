@@ -63,6 +63,7 @@ export function snapshot(over: Partial<Snapshot> = {}): Snapshot {
       engine: "fluid",
       source: "both",
       mic: null,
+      locale: "en-US",
       model: "claude-haiku-5-5",
       segment_minutes: 30,
       auto_merge: true,
