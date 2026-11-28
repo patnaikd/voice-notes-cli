@@ -9,6 +9,14 @@ Record microphone and system audio, transcribe locally, and turn the transcript 
 - Named speaker identification in real time (`--engine fluid`): unknown voices are enrolled automatically; you listen to a saved sample, name them once, and every past transcript is corrected.
 - Optional Claude summaries, discussion, decisions, action items, and open questions.
 
+![Web interface: live meters and transcript, the day's meetings, and the health panel](docs/screenshots/web-live.png)
+
+| Meeting notes | Transcript with named speakers |
+| --- | --- |
+| ![A meeting's Claude notes in the web interface](docs/screenshots/web-notes.png) | ![A meeting's transcript, with speaker names and line deletion](docs/screenshots/web-transcript.png) |
+
+<sub>Screenshots show demo data, not a real meeting: the mock server (`npm --prefix web run mock`) with a scripted conversation and hand-written notes.</sub>
+
 ## Requirements
 
 An **Apple Silicon Mac running macOS 26 or later**, Python **3.12+**, and Xcode or Command Line Tools with the **macOS 26 SDK**. Use `xcode-select --install` if Command Line Tools are missing. [uv](https://docs.astral.sh/uv/getting-started/installation/) manages Python dependencies.
@@ -29,6 +37,8 @@ uv run voice-notes devices
 # Start with local transcription only
 uv run voice-notes record --title "Weekly planning" --no-refine
 ```
+
+`doctor` checks speech recognition, dependencies, permissions and Claude credentials, and reports whether Apple Intelligence's on-device model is usable (see [Troubleshooting](docs/troubleshooting.md)).
 
 Grant **Microphone** and **Screen & System Audio Recording** permissions to the terminal/helper when prompted. After changing permissions, quit and reopen the launching terminal or app. Use headphones to reduce remote voices being captured again by the microphone.
 
@@ -151,6 +161,10 @@ uv run voice-notes speakers merge 9c01 3f2a      # one person enrolled twice
 uv run voice-notes speakers forget 9c01          # delete a voice
 ```
 
+In the web interface the **Speakers** tab does the same: play a sample, type a name, or merge a voice into another.
+
+![Speakers panel: play a sample, then name or merge a voice](docs/screenshots/web-speakers.png)
+
 Journals (`events.jsonl`) store only UUIDs. Naming a speaker re-renders `transcript.md` in every meeting under `--meetings` (default `meetings/`); run `voice-notes refine` on a meeting afterwards to regenerate its Claude notes with the new names. `voice-notes transcript <events.jsonl>` re-renders one transcript without Claude.
 
 Matching uses cosine similarity of voice embeddings; `--speaker-threshold` (default 0.70) trades merging two people against splitting one. Short interjections inherit the speaker the diarizer last placed in the same slot, and Sortformer separates at most four simultaneous speakers per track. Test without a microphone by transcribing a recording: `voice-notes record --engine fluid --input-file meeting.wav` (add `--input-realtime` to feed it at live speed).
@@ -192,9 +206,13 @@ uv sync --all-extras
 uv run pytest
 uv run voice-notes build
 uv build
+npm --prefix web ci
+npm --prefix web test -- --run      # frontend tests (vitest)
+npm --prefix web run build          # rebuilds src/voice_notes/web/static; commit the result
+npm --prefix web run mock           # real server on :8799 with a fake helper and fake notes, no Mac needed
 ```
 
-Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and the web server (segment boundaries including DST, late-final routing, helper crash/stall restarts, crash recovery, auto-merge, merge/split, jobs, and the WebSocket) using a fake capture helper (`tests/fake_helper.py`) and a fake LLM. GitHub Actions runs tests and package builds on Linux; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. Speaker identification was verified on synthetic voices and file input only: a three-voice test attributed all ten turns correctly, and real-model integration tests enroll and re-recognize voices (`VOICE_NOTES_FLUID_TEST=1 uv run pytest tests/test_fluid.py`). It has not been tested live on a microphone or with real people, and no accuracy benchmark has been performed.
+Tests exercise recovery, partial checkpoints, malformed events, capture startup deadlines, worker cleanup, native microphone conversion, and the web server (segment boundaries including DST, late-final routing, helper crash/stall restarts, crash recovery, auto-merge, merge/split, jobs, and the WebSocket) using a fake capture helper (`tests/fake_helper.py`) and a fake LLM. GitHub Actions runs the Python tests and package build on Linux, plus the frontend tests, the frontend build, and a check that the committed bundle in `src/voice_notes/web/static` matches `web/src`; native conversion is also tested locally on macOS. Live microphone/system transcription and an authenticated `claude-haiku-5-5` formatting request were verified on macOS 26. Speaker identification was verified on synthetic voices and file input only: a three-voice test attributed all ten turns correctly, and real-model integration tests enroll and re-recognize voices (`VOICE_NOTES_FLUID_TEST=1 uv run pytest tests/test_fluid.py`). It has not been tested live on a microphone or with real people, and no accuracy benchmark has been performed.
 
 - [Troubleshooting](docs/troubleshooting.md): permissions, silence, authentication, and stalled environments.
 - [Architecture](docs/architecture.md): capture, event protocol, persistence, and shutdown.
