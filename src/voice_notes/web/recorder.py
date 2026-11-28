@@ -109,8 +109,7 @@ class Recorder:
                 raise RuntimeError("Recording is already running")
             store = self.server.store
             if changes:
-                store.settings = self.server.validate_settings(changes)
-                self.server.hub.broadcast("settings", settings=store.settings)
+                self.server.set_settings(changes)
             store.recording_desired = True
             store.save_state()
             try:
@@ -171,7 +170,7 @@ class Recorder:
         meeting = store.new_meeting(record)
         atomic_write(directory / "meeting.json", json.dumps({
             "title": meeting["title"], "started_at": record["started_at"], "engine": settings["engine"],
-            "source": settings["source"], "app": "all", "speakers": False, "locale": "en-US",
+            "source": settings["source"], "app": "all", "speakers": False, "locale": settings["locale"],
             "model": settings["model"], "microphone": settings["mic"] or "system default",
             **({"speakers_dir": str(self.server.registry.root.resolve())} if settings["engine"] == "fluid" else {}),
             "kind": "segment", "segment_start": record["started_at"], "segment_end": None,

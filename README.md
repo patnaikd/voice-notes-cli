@@ -22,6 +22,7 @@ git clone https://github.com/patnaikd/voice-notes-cli.git
 cd voice-notes-cli
 uv sync
 uv run voice-notes build
+uv run voice-notes configure        # meetings folder, speech engine, Claude model and CLI
 uv run voice-notes doctor
 uv run voice-notes devices
 
@@ -39,6 +40,39 @@ Mic [#######.....]  -25 dB | Speaker [#########...]  -15 dB
 
 Press **Ctrl-C once** to stop capture and save `transcript.md`. Finalized text is journaled during recording; `transcript.md` is rendered when capture stops. Only finalized sentences are printed unless `--partials` is set.
 
+## Settings (`voice-notes configure`)
+
+`voice-notes configure` asks for each setting, with the current value in brackets (Enter keeps it, `-` goes back to the default), and saves `~/.voice-notes-config.json`. Every `voice-notes` command reads that file each time it starts.
+
+| Setting | Meaning | Default | Flag / environment |
+| --- | --- | --- | --- |
+| `meetings_dir` | Folder for recordings, transcripts and notes | `meetings` in the folder you start from | `record --output`, `serve --data-dir`, `speakers --meetings` / `VOICE_NOTES_MEETINGS` |
+| `engine` | Speech recognition: `apple` (SpeechAnalyzer) or `fluid` (Parakeet, English, named speakers) | `record`: apple; web: fluid | `--engine` / `VOICE_NOTES_ENGINE` |
+| `locale` | Speech language for the apple engine | `en-US` | `--locale` / `VOICE_NOTES_LOCALE` |
+| `source` | `both`, `mic` or `system` | `both` | `--source` / `VOICE_NOTES_SOURCE` |
+| `mic` | Microphone name or UID from `voice-notes devices` | macOS default input | `--mic` / `VOICE_NOTES_MIC` |
+| `model` | Claude model that writes the notes | `claude-haiku-5-5` | `--model` / `VOICE_NOTES_MODEL` |
+| `claude_cli` | Claude Code CLI to use instead of the bundled one | bundled | `--claude-cli` / `VOICE_NOTES_CLAUDE_CLI` |
+| `speakers_dir` | Speaker registry | `~/.voice-notes/speakers` | `--speakers-dir` / `VOICE_NOTES_SPEAKERS` |
+| `port` | Web interface port | `8765` | `--port` / `VOICE_NOTES_PORT` |
+
+A command-line flag wins over an environment variable (also read from `.env`), which wins over the config file, which wins over the default. `voice-notes configure --show` prints each value and where it came from. For scripts:
+
+```sh
+uv run voice-notes configure --set engine=fluid --set meetings_dir=~/Meetings --set model=claude-sonnet-5-5
+uv run voice-notes configure --unset mic
+```
+
+Engine, source, microphone, locale and model are also in the web interface; changing them there updates the config file. `VOICE_NOTES_CONFIG=/path/to/file.json` uses another file.
+
+## Launcher (`Voice Notes.app`)
+
+```sh
+uv run voice-notes launcher install      # creates ~/Applications/Voice Notes.app
+```
+
+Double-click **Voice Notes** in `~/Applications`, the Dock or Spotlight. It opens the web interface in your browser, first starting the server in the background if nothing is answering on the configured port (an installed `voice-notes service` is reused). The app reads `~/.voice-notes-config.json` on every launch, so it does not need reinstalling after `configure`; reinstall it only if you move this checkout. If the server cannot start, an alert points to `~/Library/Logs/voice-notes/launcher.log`; the server's own output is in `server.launcher.log` there. `voice-notes launcher open` does the same from a terminal, and `voice-notes launcher uninstall` removes the app. A server started by the launcher keeps running until you log out; `voice-notes service install` is the better choice for always-on recording.
+
 ## Web interface (all-day recording)
 
 ```sh
@@ -50,7 +84,7 @@ Click **Start** in the browser and leave it running. Recording is split into seg
 
 The server binds to `127.0.0.1` and has no authentication; `--allow-remote` is required for any other host. Files live under `--data-dir` (default `meetings/`): one folder per segment in the same format as `record`, `merged/<meeting>/` for merged notes, and `index.json`, `jobs.json`, `state.json`, `logs/server.log`. A crashed capture helper is restarted automatically, a hung one is killed, and after a server crash open segments are closed from their journals, pending notes jobs resume, and recording resumes if it was on.
 
-Run it at login with launchd (restarted automatically if it exits):
+Run it at login with launchd (restarted automatically if it exits). The agent reads `~/.voice-notes-config.json` when it starts; run `service install` again after `configure` to restart it. A `--port` or `--data-dir` given to `service install` is pinned instead:
 
 ```sh
 uv run voice-notes service install     # ~/Library/LaunchAgents/local.voice-notes.web.plist

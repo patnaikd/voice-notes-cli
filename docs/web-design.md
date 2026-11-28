@@ -125,11 +125,11 @@ interface Health {
   disk_free_gb: number;
   warnings: string[];                // e.g. "Server memory above 1024 MB", "No audio level for 120 s"
 }
-interface Settings { engine: "apple" | "fluid"; source: "both" | "mic" | "system"; mic: string | null; model: string; segment_minutes: number; auto_merge: boolean; auto_merge_min_confidence: number; }
+interface Settings { engine: "apple" | "fluid"; source: "both" | "mic" | "system"; mic: string | null; locale: string; model: string; segment_minutes: number; auto_merge: boolean; auto_merge_min_confidence: number; }
 interface Job { id: string; kind: "notes" | "continuation"; target: string; status: "queued" | "running" | "done" | "failed"; attempts: number; error: string | null; created_at: string; }
 ```
 
-Defaults: `engine "fluid"`, `source "both"`, `mic null`, `model "claude-haiku-5-5"`, `segment_minutes 30`, `auto_merge true`, `auto_merge_min_confidence 0.6`.
+Defaults: `engine "fluid"`, `source "both"`, `mic null`, `locale "en-US"`, `model "claude-haiku-5-5"`, `segment_minutes 30`, `auto_merge true`, `auto_merge_min_confidence 0.6`. At startup, `engine`, `source`, `mic`, `locale` and `model` set in `~/.voice-notes-config.json` or `VOICE_NOTES_*` variables replace the saved values, and changing them in the browser writes them back to that file, so the CLI, the server and the launcher agree.
 
 ## WebSocket `/ws` (server → client push)
 

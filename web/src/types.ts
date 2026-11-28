@@ -98,6 +98,7 @@ export interface Settings {
   engine: Engine;
   source: SourceSetting;
   mic: string | null;
+  locale: string;
   model: string;
   segment_minutes: number;
   auto_merge: boolean;

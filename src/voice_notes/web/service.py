@@ -12,21 +12,41 @@ def plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 
-def build_plist(*, port: int, data_dir: Path, working_dir: Path, build_dir: Path, speakers_dir: Path) -> dict:
+def pinned_environment(values: dict, sources: dict) -> dict:
+    """Variables that give the agent this shell's choices: the config file in use, and settings that came
+    from a flag or the environment. Settings from the config file are not copied, so the agent reads
+    ~/.voice-notes-config.json itself each time it starts and later edits apply after a restart."""
+    from .. import config
+    environment = {}
+    if os.environ.get(config.CONFIG_ENV):
+        environment[config.CONFIG_ENV] = str(config.config_path().resolve())
+    for option in config.OPTIONS:
+        if option.key in ("meetings_dir", "port"):
+            continue  # passed as serve flags
+        if sources.get(option.key) in ("flag", "env") and values.get(option.key) is not None:
+            value = values[option.key]
+            environment[option.env] = str(Path(value).resolve()) if option.kind == "path" else str(value)
+    return environment
+
+
+def build_plist(*, working_dir: Path, build_dir: Path, port: int | None = None, data_dir: Path | None = None,
+                environment: dict | None = None) -> dict:
+    """port and data_dir are pinned only when given (from a flag or the environment); otherwise the
+    agent's `serve` reads them from the config file."""
     logs = Path.home() / "Library" / "Logs" / "voice-notes"
     source_root = Path(__file__).resolve().parents[2]
-    environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
-                   "PYTHONPATH": str(source_root), "PYTHONUNBUFFERED": "1"}
-    from ..refine import CLI_ENV, claude_cli
-    if cli := claude_cli():
-        environment[CLI_ENV] = cli
+    serve = ["serve"]
+    if port is not None:
+        serve += ["--port", str(port)]
+    if data_dir is not None:
+        serve += ["--data-dir", str(Path(data_dir).resolve())]
     return {
         "Label": LABEL,
         "ProgramArguments": [sys.executable, "-m", "voice_notes.cli", "--build-dir", str(build_dir.resolve()),
-                             "--speakers-dir", str(Path(speakers_dir).resolve()), "serve", "--port", str(port),
-                             "--data-dir", str(data_dir.resolve())],
+                             *serve],
         "WorkingDirectory": str(working_dir.resolve()),
-        "EnvironmentVariables": environment,
+        "EnvironmentVariables": {"PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+                                 "PYTHONPATH": str(source_root), "PYTHONUNBUFFERED": "1", **(environment or {})},
         "RunAtLoad": True,
         "KeepAlive": True,
         "ThrottleInterval": 10,
@@ -43,8 +63,11 @@ def launchctl(*arguments, check=False) -> subprocess.CompletedProcess:
 def main(args) -> int:
     domain, path = f"gui/{os.getuid()}", plist_path()
     if args.action == "install":
-        definition = build_plist(port=args.port, data_dir=args.data_dir, working_dir=Path.cwd(),
-                                 build_dir=args.build_dir, speakers_dir=args.speakers_dir)
+        sources, pinned = args.config_sources, ("flag", "env")
+        definition = build_plist(working_dir=Path.cwd(), build_dir=args.build_dir,
+                                 port=args.port if sources["port"] in pinned else None,
+                                 data_dir=args.data_dir if sources["meetings_dir"] in pinned else None,
+                                 environment=pinned_environment(args.settings, sources))
         Path(definition["StandardOutPath"]).parent.mkdir(parents=True, exist_ok=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         launchctl("bootout", f"{domain}/{LABEL}")
@@ -54,6 +77,8 @@ def main(args) -> int:
             raise RuntimeError(f"launchctl bootstrap failed: {(result.stderr or result.stdout).strip()}")
         print(f"Installed {path}\nVoice Notes now runs at login: http://localhost:{args.port}/\n"
               f"Logs: {Path(definition['StandardErrorPath']).parent}\n"
+              "It reads ~/.voice-notes-config.json each time it starts; after `voice-notes configure`, "
+              "run `voice-notes service install` again to restart it.\n"
               "The first recording asks macOS for Microphone and Screen & System Audio Recording permission "
               "for the capture helper; grant both, then restart recording.")
     elif args.action == "uninstall":
